@@ -65,13 +65,56 @@ cd /c/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
 
 ## 4. モデルの取得
 
-AIサーバーに届くなら従来どおり:
+### AIサーバー（社内 LAN）から取る
 
 ```bash
-bash tools/fetch-models.sh C:/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
+# 第1引数はモデル置き場、第2引数はプロファイル（既定 local）
+bash tools/fetch-models.sh C:/WORK/AI/models local
+bash tools/fetch-models.sh C:/WORK/AI/models server
 ```
 
-**社外など rag-poc に届かない場所では HuggingFace から直接取る。**
+サーバー上は **HuggingFace の hub キャッシュがそのまま共有ストア**になっている。
+
+```
+/srv/llm/hf/hub/models--<org>--<repo>/snapshots/<revision>/<ファイル名>   ← シンボリックリンク
+/srv/llm/hf/hub/models--<org>--<repo>/blobs/<sha256>                      ← 実体
+```
+
+`<revision>` は落とした時期で変わるので**パスを決め打ちしないこと**。
+スクリプトは `snapshots` 配下を `find` して `readlink -f` で実体へ解決している。
+中身を直接見るには:
+
+```bash
+ssh rag-poc 'ls -d /srv/llm/hf/hub/models--* | sed "s|.*/models--||"'
+ssh rag-poc 'du -sh /srv/llm/hf/hub/models--ByteDance--Hyper-SD'
+```
+
+#### 🔴 いまサーバーにあるのは server（SDXL）用だけ
+
+2026-09-08 に実地確認した結果:
+
+| モデル | プロファイル | サーバー上 |
+|---|---|---|
+| `animagine-xl-4.0.safetensors` | server | あり（6.5G） |
+| `controlnet-union-sdxl-promax.safetensors` | server | あり（2.4G） |
+| `Hyper-SDXL-8steps-CFG-lora.safetensors` 他2本 | server | あり（各 751M） |
+| `sdxl_vae.safetensors` | server | あり（320M） |
+| `DreamShaper_8_pruned.safetensors` | **local（当日使う）** | **無し** |
+| `sd-vae-ft-mse.safetensors` | **local** | **無し** |
+| `control_v11p_sd15_canny.safetensors` | **local** | **無し** |
+| `Hyper-SD15-8steps-CFG-lora.safetensors` | **local** | **無し** |
+
+`ByteDance/Hyper-SD` のキャッシュはあるが **SDXL 版だけ**で、SD15 版は入っていない
+（HF のキャッシュは「要求したファイルだけ」入るため）。
+
+したがって **当日動かす CPU 実行構成のモデルは、いまは LAN から取れない。**
+各自 HuggingFace から取ること（下記）。サーバーへ置きたい場合は
+llm-catalog にダウンロードを積む（`curl http://192.168.1.10:50050/api/queue`）か、
+手元にある機体から転送する。
+
+### HuggingFace から直接取る
+
+**rag-poc に届かない場所、または上表で「無し」のモデルはここから取る。**
 2026-09-08 にスクリプトをリポジトリへ取り込んだ（それまでリポジトリ外の
 `C:\WORK\AI\dl-models.sh` を参照していて、clone しただけでは作り直せなかった）。
 

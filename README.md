@@ -137,6 +137,12 @@ AI変換を飛ばしても **ゲーム・カード・ランキングは動きま
 bash tools/dl-models-local.sh C:/WORK/AI/models
 ```
 
+> **社内 LAN の AI サーバーからは、いまこの4本は取れません。**
+> 2026-09-08 に確認した時点で、共有ストアにあるのは `server` プロファイル用の
+> SDXL だけでした（詳細と確認方法は
+> [docs/comfyui-local-setup.md](docs/comfyui-local-setup.md)）。
+> LAN から取れるようになれば `bash tools/fetch-models.sh C:/WORK/AI/models local` が使えます。
+
 > サイズは 2026-09-08 に実機のファイルと HuggingFace の `Content-Length` が
 > **バイト単位で一致することを確認**した値です。ダウンロード後に検証するので、
 > 途中で切れたファイルを掴んだままにはなりません。
