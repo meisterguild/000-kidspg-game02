@@ -71,12 +71,23 @@ AIサーバーに届くなら従来どおり:
 bash tools/fetch-models.sh C:/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
 ```
 
-**社外など rag-poc に届かない場所では HuggingFace から直接取る**（`C:\WORK\AI\dl-models.sh`）。
-5ファイルを並列に落とす。合計約 10.6GB。
+**社外など rag-poc に届かない場所では HuggingFace から直接取る。**
+2026-09-08 にスクリプトをリポジトリへ取り込んだ（それまでリポジトリ外の
+`C:\WORK\AI\dl-models.sh` を参照していて、clone しただけでは作り直せなかった）。
 
 ```bash
-bash C:/WORK/AI/dl-models.sh C:/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
+# local プロファイル（CPU実行・SD1.5）。**当日使うのはこちら**。4本・約4.1GB
+bash tools/dl-models-local.sh C:/WORK/AI/models
+
+# server プロファイル（GPU機・SDXL）。5本・約10.6GB
+bash tools/dl-models.sh C:/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
 ```
+
+⚠️ **この節はもともと SDXL（server）のことしか書いていなかった。**
+config.json の activeProfile は `local` で、当日実際に使うのは SD1.5 の4本。
+その入手元がどこにも記録されておらず、環境を作り直せない状態だった（2026-09-08 に判明）。
+ローカル用の内訳とサイズは README の
+「[リポジトリに含まれないもの](../README.md#リポジトリに含まれないもの別途用意が必要)」にある。
 
 > レジューム（`curl -C -`）は使っていない。HF の CDN が Range を無視して
 > 全体を追記してくることがあり、**サイズ超過の壊れたファイル**ができた（実際に踏んだ）。

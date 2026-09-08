@@ -13,6 +13,7 @@ KidsPG フェスいたみ（2026年9月12日）向けのイベント用アプリ
 
 - [システム構成](#システム構成)
 - [動作要件](#動作要件)
+- [リポジトリに含まれないもの（別途用意が必要）](#リポジトリに含まれないもの別途用意が必要)
 - [起動方法（動作確認はここだけ読めば足ります）](#起動方法動作確認はここだけ読めば足ります)
 - [検証ツール](#検証ツール)
 - [1プレイの流れ](#1プレイの流れ)
@@ -95,6 +96,66 @@ AI変換を飛ばしても **ゲーム・カード・ランキングは動きま
 > **開発機での置き場所の例**です。自分の環境に読み替えてください。
 
 ---
+
+## リポジトリに含まれないもの（別途用意が必要）
+
+**このリポジトリにあるのはソースと設定だけです。** 以下は clone しても付いてきません。
+
+### ソフトウェア
+
+| 必要なもの | 版 | 確認コマンド | 無いとどうなるか |
+|---|---|---|---|
+| Node.js | 20 以上（v24.16.0 で動作確認） | `node -v` | ビルドも起動もできない |
+| **ImageMagick 7** | `magick` が PATH にあること | `magick -version` | **カードが1枚も出ない** |
+| Python | 3.12（ComfyUI の venv 用） | `python --version` | AI変換が使えない |
+| ComfyUI | 0.34.0 で動作確認 | `curl http://127.0.0.1:8188/system_stats` | AI変換が使えない（ゲームは動く） |
+| PyTorch | CPU 版 or CUDA 版 | — | ComfyUI が起動しない |
+| Meiryo（`C:/Windows/Fonts/meiryo.ttc`） | Windows 同梱 | — | カードの文字が描けない |
+
+**カスタムノードは1つも要りません。** ワークフローは ComfyUI の標準ノードだけで
+組んであります（当日PCに追加インストールを要求しないため）。
+
+構築手順は **[docs/comfyui-local-setup.md](docs/comfyui-local-setup.md)** にあります。
+
+### AI モデル（合計 約4.1GB）
+
+`config.json` の `activeProfile` が **`local`（CPU実行・SD1.5）** のとき必要なのは
+次の4本です。**名前とフォルダを変えないこと**——
+`assets/ComfyUI_KidsPG_2026_local.json` がこの名前で参照しており、
+違うと ComfyUI が「モデルが無い」で失敗して全員のカードがプレースホルダのままになります。
+
+| 置き場所 | ファイル名 | サイズ | 入手元 |
+|---|---|---:|---|
+| `models/checkpoints/` | `DreamShaper_8_pruned.safetensors` | 2,132,625,894 | [Lykon/DreamShaper](https://huggingface.co/Lykon/DreamShaper) |
+| `models/vae/` | `sd-vae-ft-mse.safetensors` | 334,643,276 | [stabilityai/sd-vae-ft-mse](https://huggingface.co/stabilityai/sd-vae-ft-mse) の `diffusion_pytorch_model.safetensors` を改名 |
+| `models/controlnet/` | `control_v11p_sd15_canny.safetensors` | 1,445,157,124 | [lllyasviel/sd-controlnet-canny](https://huggingface.co/lllyasviel/sd-controlnet-canny) の `diffusion_pytorch_model.safetensors` を改名 |
+| `models/loras/` | `Hyper-SD15-8steps-CFG-lora.safetensors` | 269,127,064 | [ByteDance/Hyper-SD](https://huggingface.co/ByteDance/Hyper-SD) |
+
+一括で取るスクリプトを用意しています（サイズ検証つき）。
+
+```bash
+bash tools/dl-models-local.sh C:/WORK/AI/models
+```
+
+> サイズは 2026-09-08 に実機のファイルと HuggingFace の `Content-Length` が
+> **バイト単位で一致することを確認**した値です。ダウンロード後に検証するので、
+> 途中で切れたファイルを掴んだままにはなりません。
+
+`steps: 8` は **Hyper-SD の LoRA が 8 ステップ前提**だからです。下げると絵が崩れます。
+
+### GPU 機で動かす場合（`server` プロファイル）
+
+SDXL の別セット（合計 約10.6GB）が必要です。`tools/dl-models.sh` があります
+（社内 AI サーバーから取る `tools/fetch-models.sh` もありますが、社外では使えません）。
+期待サイズは [docs/comfyui-local-setup.md](docs/comfyui-local-setup.md) に記載しています。
+
+### ハードウェア
+
+| | 内容 |
+|---|---|
+| Webカメラ | 無くてもダミー写真モードで動きます（[制約あり](#カメラが無い場合)） |
+| GPU | 無くても動きます。**CPU実行だと1枚あたり約170秒**かかります（この開発機 Intel Core 7 150U での実測） |
+
 
 ## 起動方法（動作確認はここだけ読めば足ります）
 
@@ -448,7 +509,9 @@ kidspg-game-2026/
 | `test-stage-balance.mjs` | ステージ構成とランク閾値・難所の数の対応の検査 |
 | `measure-stages.mjs` | 盤面生成の実測（グミ数・難所の数・閾値の候補） |
 | `notify.sh` | 作業の節目をスマホへ通知（ntfy） |
-| `fetch-models.sh` | AIサーバーからモデルを取り込む |
+| `dl-models-local.sh` | **local プロファイル用（SD1.5・4本）** のモデルを HuggingFace から取得（サイズ検証つき） |
+| `dl-models.sh` | server プロファイル用（SDXL・5本）のモデルを HuggingFace から取得 |
+| `fetch-models.sh` | 社内 AI サーバーからモデルを取り込む（社外では使えません） |
 
 ### results/ の場所を差し替える
 
