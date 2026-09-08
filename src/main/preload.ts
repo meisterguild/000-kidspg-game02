@@ -65,6 +65,15 @@ const electronAPI = {
     // 以前は何も返しておらず、ランキング画面を閉じるたびに TypeError になっていた。
     return () => { ipcRenderer.removeListener('ranking:data-updated', listener as never); };
   },
+  /**
+   * スライドショーの操作（停止・再開・ページ送り）を受け取る。
+   * main 側の globalShortcut から届くので、ゲーム側にフォーカスがあっても効く。
+   */
+  onSlideshowCommand: (callback: (action: 'toggle' | 'next' | 'prev') => void) => {
+    const listener = (_: unknown, action: 'toggle' | 'next' | 'prev') => callback(action);
+    ipcRenderer.on('ranking:slideshow', listener as never);
+    return () => { ipcRenderer.removeListener('ranking:slideshow', listener as never); };
+  },
 
   // ComfyUI API
   comfyui: {

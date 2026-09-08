@@ -464,6 +464,37 @@ export const TestPage: React.FC = () => {
           <p className="text-sm text-red-300 mt-1">Escキーでトップページに戻ります</p>
         </div>
 
+        {/* 運営向けのキー操作一覧。
+            当日は覚えていられないので、設定ページを開けば分かるようにしておく。 */}
+        <div className="mb-12">
+          <div className="bg-red-900 border border-red-700 rounded-lg shadow-md p-6">
+            <h2 className="text-xl font-semibold text-white mb-4">運営向け キー操作</h2>
+            <table className="w-full text-sm text-red-100">
+              <tbody>
+                {[
+                  ['F7', 'ランキングのスライドショーを 停止／再開', '止めている間は画面の左上に小さな赤い丸が出る。自動では再開しない'],
+                  ['F8', 'ランキングを 次のページへ', '送ると自動送りは止まる'],
+                  ['F6', 'ランキングを 前のページへ', '同じく自動送りは止まる'],
+                  ['F11', '全画面の 設定／解除', 'ゲーム画面・ランキング画面それぞれで効く'],
+                  ['Esc', '終了確認／このページを閉じる', ''],
+                  ['z / Backspace', 'ゲーム中に 1手もどす', '画面のボタンと同じ'],
+                  ['r', 'ゲーム中に やりなおす', '同じ難易度で別の問題になる'],
+                ].map(([key, what, note]) => (
+                  <tr key={key} className="border-b border-red-800 align-top">
+                    <td className="py-2 pr-4 whitespace-nowrap font-mono text-white">{key}</td>
+                    <td className="py-2 pr-4 whitespace-nowrap">{what}</td>
+                    <td className="py-2 text-red-300">{note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-xs text-red-300 mt-4">
+              F6・F7・F8 はアプリの外からでも効く（ゲーム画面を触っていてもランキングを操作できる）。
+              ゲームが Space・Enter を使っているため、その2つはスライドショーに割り当てていない。
+            </p>
+          </div>
+        </div>
+
         {/* 設定セクション */}
         <div className="mb-12">
           <div className="bg-red-900 border border-red-700 rounded-lg shadow-md p-6">

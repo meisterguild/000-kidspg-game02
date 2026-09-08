@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell } from 'electron';
 import type { MessageBoxOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -312,6 +312,9 @@ class ElectronApp {
       this.exitConfirmed = true;
       this.armForceExit();
 
+      // 握ったまま終わると、次の起動でスライドショー操作キーを登録できない
+      globalShortcut.unregisterAll();
+
       try {
         if (this.comfyUIService) {
           await this.comfyUIService.destroy();
@@ -337,6 +340,13 @@ class ElectronApp {
     this.mainWindow = new BrowserWindow({
       width: WINDOW_CONFIG.main.width,
       height: WINDOW_CONFIG.main.height,
+      // 全画面で開く。1200x800 の固定サイズだと、それより狭い画面では
+      // Electron が作業領域まで切り詰めるため設計どおりの縦が取れない
+      // （1280x800・タスクバーありの機体で描画領域が 1185x714 になり、
+      //  右列の説明と下端が切れた）。当日PCの解像度は未確定なので、
+      //  固定サイズのまま出すと本番で同じことが起きる。
+      // 幅・高さは全画面を抜けたときの大きさとして残す。
+      fullscreen: true,
       autoHideMenuBar: true,
       webPreferences: {
         nodeIntegration: false,
@@ -387,6 +397,14 @@ class ElectronApp {
       }
     }
 
+    // F11 で全画面を抜ける／戻す。開発中に他のウィンドウへ移れなくなるのを防ぐためで、
+    // 当日は触らない（子どもがキーボードに触れても、次の F11 で戻せる）。
+    this.mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || input.key !== 'F11') return;
+      event.preventDefault();
+      this.mainWindow?.setFullScreen(!this.mainWindow.isFullScreen());
+    });
+
     // ウィンドウのXボタンクリック時に終了確認を表示
     this.mainWindow.on('close', async (event) => {
       if (!this.exitConfirmed) {
@@ -398,6 +416,35 @@ class ElectronApp {
     this.mainWindow.on('closed', () => {
       this.mainWindow = null;
     });
+  }
+
+  /**
+   * ランキング画面のスライドショーを、フォーカスに関係なく操作できるようにする。
+   *
+   * 2モニタ運用（ゲーム＝マウス／ランキング＝キーボード）を想定している。
+   * ランキングは `parent: mainWindow` の子ウィンドウで、キーボードは
+   * **フォーカスのあるウィンドウにしか届かない**。子どもがゲームを
+   * クリックした瞬間にフォーカスがゲーム側へ移るため、renderer 側で
+   * keydown を待つ作りでは効かなくなる。だから main 側で拾って IPC で送る。
+   *
+   * 🔴 **Space・Enter は使えない。** ゲーム側が「スタート」「さつえい」
+   * 「次へ」で使っており、グローバルに奪うと受付が止まる。
+   * F11 も全画面の切り替えで使っているので避ける。
+   */
+  private registerSlideshowShortcuts(): void {
+    const bind: Array<[string, 'toggle' | 'next' | 'prev']> = [
+      ['F7', 'toggle'],
+      ['F8', 'next'],
+      ['F6', 'prev'],
+    ];
+    for (const [key, action] of bind) {
+      const ok = globalShortcut.register(key, () => {
+        this.rankingWindow?.webContents.send('ranking:slideshow', action);
+      });
+      // 他のアプリが既に握っていると登録できない。黙って諦めると
+      // 当日「キーが効かない」原因が分からなくなるので必ず記録に残す。
+      if (!ok) console.warn(`スライドショー操作キーを登録できませんでした: ${key}`);
+    }
   }
 
   private createRankingWindow(): void {
@@ -432,7 +479,19 @@ class ElectronApp {
       });
     }
 
+    // フォーカスに関係なくスライドショーを操作できるようにする
+    this.registerSlideshowShortcuts();
+
+    // F11 でこのウィンドウの全画面を切り替える。2枚目のモニタへ移してから
+    // 全画面にする運用を想定している（要件では本番は fullscreen 固定）。
+    this.rankingWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || input.key !== 'F11') return;
+      event.preventDefault();
+      this.rankingWindow?.setFullScreen(!this.rankingWindow.isFullScreen());
+    });
+
     this.rankingWindow.on('closed', () => {
+      globalShortcut.unregisterAll();
       this.rankingWindow = null;
     });
   }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { RecentEntry, RankingTopEntry } from '@shared/types/ranking';
 import { AppConfig } from '@shared/types';
 
@@ -40,9 +40,19 @@ const PaginatedScrollList: React.FC<PaginatedScrollListProps> = ({
 
   const [currentPage, setCurrentPage] = useState(0);
   const [slide, setSlide] = useState<SlidePhase>('center');
+  /**
+   * 自動送りを止めているか。
+   * 親御さんがカードを撮るとき、スライドショーが動いたままだと
+   * カメラを構えて待つことになるため、運営が止められるようにした
+   * （2026-09-08 の指摘）。**自動では再開しない**（撮り終わるまで確実に止める）。
+   */
+  const [paused, setPaused] = useState(false);
   const [imageUrls, setImageUrls] = useState<Record<string, string | null>>({});
   // 終日つけっぱなしの画面なので、待機中のタイマーは必ず片付ける
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // step() から最新のページ数を読む箱。依存に入れると送るたびに関数が作り直され、
+  // 自動送りの setInterval が張り直されて間隔がずれる
+  const pagesLenRef = useRef(0);
 
   const pages = useMemo(() => {
     if (entries.length === 0) return [];
@@ -52,6 +62,9 @@ const PaginatedScrollList: React.FC<PaginatedScrollListProps> = ({
     }
     return result;
   }, [entries, cardsPerPage]);
+
+  // step() が最新のページ数を読めるようにする（レンダーごとに詰め替える）
+  pagesLenRef.current = pages.length;
 
   // ページ数が減ったとき（記録が入れ替わった等）に、無いページを指したままにしない
   useEffect(() => {
@@ -169,23 +182,31 @@ const PaginatedScrollList: React.FC<PaginatedScrollListProps> = ({
     };
   }, [entries]);
 
-  useEffect(() => {
-    if (pages.length <= 1) return;
+  /**
+   * ページを送る。自動送りと運営のキー操作で同じ経路を通す
+   * （動きが2通りに分かれると、手で送ったときだけ挙動が違うことになる）。
+   */
+  const step = useCallback((delta: number) => {
+    const count = pagesLenRef.current;
+    if (count <= 1) return;
+    // 1) 今のページを左へ送り出す
+    setSlide('out');
+    const t1 = setTimeout(() => {
+      // 2) 次のページに差し替え、アニメーション無しで右端へ置く
+      setCurrentPage(prev => (prev + delta + count) % count);
+      setSlide('in');
+      // 3) 1フレーム置いてから定位置へ滑り込ませる
+      //    （同じフレームで戻すとブラウザが「移動」と見なさず、瞬間移動になる）
+      const t2 = setTimeout(() => setSlide('center'), 30);
+      timersRef.current.push(t2);
+    }, half);
+    timersRef.current.push(t1);
+  }, [half]);
 
-    const interval = setInterval(() => {
-      // 1) 今のページを左へ送り出す
-      setSlide('out');
-      const t1 = setTimeout(() => {
-        // 2) 次のページに差し替え、アニメーション無しで右端へ置く
-        setCurrentPage(prev => (prev + 1) % pages.length);
-        setSlide('in');
-        // 3) 1フレーム置いてから定位置へ滑り込ませる
-        //    （同じフレームで戻すとブラウザが「移動」と見なさず、瞬間移動になる）
-        const t2 = setTimeout(() => setSlide('center'), 30);
-        timersRef.current.push(t2);
-      }, half);
-      timersRef.current.push(t1);
-    }, intervalSeconds * 1000);
+  useEffect(() => {
+    if (pages.length <= 1 || paused) return;
+
+    const interval = setInterval(() => step(1), intervalSeconds * 1000);
 
     return () => {
       clearInterval(interval);
@@ -193,7 +214,22 @@ const PaginatedScrollList: React.FC<PaginatedScrollListProps> = ({
       timersRef.current = [];
       setSlide('center');
     };
-  }, [pages.length, intervalSeconds, half]);
+  }, [pages.length, intervalSeconds, paused, step]);
+
+  /**
+   * 運営の操作を受ける（main 側の globalShortcut から届く）。
+   * F7 = 停止／再開・F8 = 次・F6 = 前。
+   * ゲーム側にフォーカスがあっても効くよう、main を経由している。
+   * 手で送ったときは自動送りも止める（見たいカードが流れていくため）。
+   */
+  useEffect(() => {
+    const cleanup = window.electronAPI?.onSlideshowCommand?.((action) => {
+      if (action === 'toggle') { setPaused((p) => !p); return; }
+      setPaused(true);
+      step(action === 'next' ? 1 : -1);
+    });
+    return cleanup;
+  }, [step]);
 
   if (entries.length === 0) {
     return (
@@ -207,6 +243,16 @@ const PaginatedScrollList: React.FC<PaginatedScrollListProps> = ({
 
   return (
     <div className="w-full h-full relative overflow-hidden">
+      {/* 停止中の目印。運営が分かればよいので小さく、
+          カードに重ならない左上の隅に置く（撮った写真に写り込ませない）。
+          2026-09-08 の指摘で「一時停止中」の大きな表示から差し替えた。 */}
+      {paused && (
+        <div
+          className="absolute top-1 left-1 z-10 rounded-full bg-red-600 shadow"
+          style={{ width: 10, height: 10 }}
+          title="スライドショー停止中（F7 で再開）"
+        />
+      )}
       <div
         className="grid w-full h-full p-2 gap-2"
         style={{
