@@ -224,8 +224,19 @@ export const initializeAudioSystem = async (): Promise<void> => {
   }
 };
 
-// 音声を再生する関数
-export const playSound = async (soundKey: keyof typeof SOUND_ASSET_RELATIVE_PATHS, volume: number = 0.7): Promise<void> => {
+/**
+ * 音声を再生する。
+ *
+ * `rate` は再生速度＝音の高さ。同じ音でも連続で少しずつ上げると
+ * 「食べ進めている」感じが出る（グミを食べる音で使っている）。
+ * 音声要素はキーごとに1つを使い回すので、毎回明示的に設定しておく。
+ * 指定しなければ従来どおり等速。
+ */
+export const playSound = async (
+  soundKey: keyof typeof SOUND_ASSET_RELATIVE_PATHS,
+  volume: number = 0.7,
+  rate: number = 1
+): Promise<void> => {
   
   // ユーザー操作によるAudioContextの初期化を試みる
   await initializeAudioSystem();
@@ -246,6 +257,8 @@ export const playSound = async (soundKey: keyof typeof SOUND_ASSET_RELATIVE_PATH
 
     audio.muted = false;
     audio.volume = Math.max(0, Math.min(1, volume)); // 0も許容
+    // 極端な値は音が壊れるので常識的な範囲に収める
+    audio.playbackRate = Math.max(0.5, Math.min(2, rate));
     audio.currentTime = 0;
 
     
