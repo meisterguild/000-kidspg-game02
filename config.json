@@ -148,7 +148,7 @@
       "processing": 600000,
       "queue": 900000
     },
-    "_comment_retry_settings": "※未実装。comfyui-worker.ts はこの値を参照していない。「3回リトライされるはず」という前提で当日の判断をしないこと",
+    "_comment_retry_settings": "生成に失敗したときに作り直す回数と待ち時間（maxAttempts は初回を含む）。作り直すのは**アップロードの失敗・投入の失敗・通信の失敗・出力の取りこぼし**で、**キュー期限（timeouts.queue）の超過では作り直さない**。期限切れはComfyUIが詰まっている状態なので、積み直すと待っている全員がさらに遅れる。0 や 1 にすると作り直さない",
     "retry": {
       "maxAttempts": 3,
       "delayMs": 1000
