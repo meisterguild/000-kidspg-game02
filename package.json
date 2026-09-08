@@ -1,0 +1,186 @@
+{
+  "name": "kidspg-game-2026",
+  "version": "1.0.0",
+  "description": "KidsPG 3Dグミ一筆食べパズル - Electronアプリケーション",
+  "main": "dist/main/main/main.js",
+  "scripts": {
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
+    "dev:main": "tsc -p tsconfig.main.json -w",
+    "dev:renderer": "vite",
+    "electron": "electron .",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on dist/main/main/main.js && electron .\"",
+    "start": "npm run build && npm run electron",
+    "dist": "node -e \"const fs = require('fs'), path = require('path'), dir = './release'; if (fs.existsSync(dir)) { for (const file of fs.readdirSync(dir)) { fs.rmSync(path.join(dir, file), { recursive: true, force: true }); } }\" && npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "test": "node --test tools/test-workflow-template.cjs tools/test-config-writer.cjs tools/test-magick-script.cjs tools/test-png-integrity.cjs tools/test-startup-consistency.cjs tools/test-retry-failed.cjs tools/test-exit-path.cjs tools/test-quality-fallback.cjs tools/test-composition-parity.cjs tools/test-purge-photos.cjs tools/test-regen-bat.cjs tools/test-rank-and-level.cjs tools/test-solve-stage.mjs tools/test-stage-balance.mjs",
+    "check": "npm run build && npx tsc --noEmit && npm run lint && npm test",
+    "lint": "eslint src --ext .ts,.tsx,.js,.jsx",
+    "lint:fix": "npm run lint -- --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "recovery": "tsx src/test/memorial-card-recovery.ts",
+    "recovery:dry": "tsx src/test/memorial-card-recovery.ts --dry-run",
+    "recovery:reset": "tsx src/test/memorial-card-recovery.ts --reset",
+    "recovery:force": "tsx src/test/memorial-card-recovery.ts --force-all"
+  },
+  "devDependencies": {
+    "@types/form-data": "^2.2.1",
+    "@types/node": "^22.5.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.39.1",
+    "@typescript-eslint/parser": "^8.39.1",
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.0",
+    "concurrently": "^8.2.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.0.12",
+    "eslint": "^8.57.0",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-react": "^7.35.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "postcss": "^8.4.0",
+    "prettier": "^3.3.0",
+    "tailwindcss": "^3.4.0",
+    "ts-node": "^10.9.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "wait-on": "^8.0.0",
+    "@types/three": "^0.180.0"
+  },
+  "ts-node": {
+    "esm": true,
+    "experimentalSpecifierResolution": "node"
+  },
+  "dependencies": {
+    "form-data": "^4.0.4",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "three": "^0.180.0"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "typescript",
+    "three",
+    "game",
+    "camera",
+    "ai"
+  ],
+  "author": {
+    "name": "KidsPG Team",
+    "email": "info@kidspg.com"
+  },
+  "license": "MIT",
+  "homepage": "./",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meisterguild/000-kidspg-game01"
+  },
+  "build": {
+    "appId": "com.kidspg.game",
+    "productName": "KidsPG AIグミパク",
+    "icon": "assets/icon.ico",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*"
+    ],
+    "extraFiles": [
+      {
+        "from": "config.json",
+        "to": "."
+      },
+      {
+        "from": "assets",
+        "to": "assets"
+      },
+      {
+        "from": "card_base_images",
+        "to": "card_base_images",
+        "filter": [
+          "**/*",
+          "!superseded_*/**"
+        ]
+      },
+      {
+        "from": "start-kidspg.bat",
+        "to": "."
+      },
+      {
+        "from": "stop-kidspg.bat",
+        "to": "."
+      },
+      {
+        "from": "dist/renderer/ranking.html",
+        "to": "."
+      },
+      {
+        "from": "CREDITS.md",
+        "to": "."
+      },
+      {
+        "from": "LICENSE",
+        "to": "."
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.games",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Game"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

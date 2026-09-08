@@ -1,0 +1,504 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import GummyBoard from './GummyBoard';
+import { DIFFICULTY, generateStage, movableFrom } from './core';
+import { playSound } from '../../utils/assets';
+import { useWideLayout } from '../../hooks/useWideLayout';
+import ShinyWaveBackground from '../../components/ShinyWaveBackground';
+
+/* ============================================================
+   ゲーム進行（制限時間・ステージ進行・スコア）
+
+   スコア = Σ（各ステージで食べたグミの最大数 × 難易度係数）
+   クリアしたステージは「全グミ × 係数」で確定する。
+   進行中のステージは「そのステージで到達した最大の食数 × 係数 × 部分点率」。
+
+   食数は "そのステージ内での最大到達数" を使う（high-water mark）。
+   Undo・やりなおしでスコアが減らないようにするため。
+   ============================================================ */
+
+/**
+ * config.json に stageProgression が無いときの既定。
+ * **出荷する config.json と揃えておくこと**（食い違うと、設定を落とした
+ * ときだけ静かに別の難易度で動く）。全面 4×4 で、3面目から経路を長くする。
+ */
+export const DEFAULT_STAGE_PROGRESSION = [
+  { size: 4, difficulty: 'veasy',  multiplier: 8 },
+  { size: 4, difficulty: 'easy',   multiplier: 8 },
+  { size: 4, difficulty: 'normal', multiplier: 8 },
+  { size: 4, difficulty: 'hard',   multiplier: 8 },
+  { size: 4, difficulty: 'vhard',  multiplier: 8 },
+];
+
+export const DEFAULT_TIME_LIMIT_SECONDS = 120;
+/** 0 以下で上限なし。ゲームは制限時間で終わるので、既定は上限を設けない */
+export const DEFAULT_MAX_STAGES = 0;
+/** 進行中ステージの部分点率。0 なら「クリアした面だけが点になる」 */
+export const DEFAULT_PARTIAL_SCORE_RATE = 0;
+
+/** クリア演出を見せてから次ステージへ進むまでの待ち時間 */
+const CLEAR_DELAY_MS = 1500;
+/** 同じグミを続けて叩いたとき、無効フィードバックを出さない猶予 */
+const REPEAT_TAP_GRACE_MS = 400;
+
+const formatTime = (sec) => {
+  const s = Math.max(0, Math.ceil(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+export default function GummyGame({ config, onScoreChange, onLevelChange, onGameOver, onEscape }) {
+  // 横に余白のある画面（PCモニタ）では HUD を左右へ逃がし、盤面を縦いっぱいに使う
+  const wide = useWideLayout();
+  const gameConf = config?.game || {};
+  const progression = useMemo(() => {
+    const p = gameConf.stageProgression;
+    return Array.isArray(p) && p.length ? p : DEFAULT_STAGE_PROGRESSION;
+  }, [gameConf.stageProgression]);
+  const timeLimit = gameConf.timeLimitSeconds ?? DEFAULT_TIME_LIMIT_SECONDS;
+  const partialRate = gameConf.partialScoreRate ?? DEFAULT_PARTIAL_SCORE_RATE;
+  const repeatLast = gameConf.repeatLastStage !== false;
+  const maxStages = gameConf.maxStages ?? DEFAULT_MAX_STAGES;
+
+  const planAt = useCallback((i) => {
+    // maxStages は「保険の上限」。0 以下なら上限なし＝**時間切れだけが終了条件**になる。
+    // 以前は既定 6 で打ち切っていたため、易しい面を速く抜けると
+    // 「残り時間があるのにゲームが終わる」状態になっていた（2026-09-02 修正）。
+    if (maxStages > 0 && i >= maxStages) return null;
+    if (i < progression.length) return progression[i];
+    return repeatLast ? progression[progression.length - 1] : null;
+  }, [progression, repeatLast, maxStages]);
+
+  const [stageIndex, setStageIndex] = useState(0);
+  const [game, setGame] = useState(() => {
+    const plan = progression[0];
+    const stage = generateStage(plan.size, plan.difficulty);
+    return { stage, path: [stage.start] };
+  });
+  const [clearedCount, setClearedCount] = useState(0);
+  const [baseScore, setBaseScore] = useState(0);   // 確定済み（クリア済みステージ）の合計
+  const [remain, setRemain] = useState(timeLimit);
+  const [finished, setFinished] = useState(false);
+  const [finishReason, setFinishReason] = useState('timeup');
+
+  const shakeRef = useRef(null);
+  const advancingRef = useRef(false);
+  const finishedRef = useRef(false);
+  const clearTimerRef = useRef(null);
+  const deadlineRef = useRef(Date.now() + timeLimit * 1000);
+  const lastTapRef = useRef({ cell: null, at: 0 });
+  const curRef = useRef(null);
+  const finishedAtRef = useRef(0);
+  const giveUpRef = useRef(null);
+  // 各コールバックから最新の値を読むための箱。レンダーごとに詰め替える。
+  const liveRef = useRef({});
+
+  const { stage, path } = game;
+  const cur = path[path.length - 1];
+  curRef.current = cur;
+  const movable = useMemo(() => movableFrom(stage, path), [stage, path]);
+  const cleared = cur === stage.goal && path.length === stage.cells.length;
+  const deadEnd = !cleared && movable.size === 0;
+  const total = stage.cells.length;
+  const plan = planAt(stageIndex) || progression[progression.length - 1];
+
+  /* --- そのステージでの最大到達数（Undo/やりなおしで減らさない） --- */
+  // state にすると「ステージ差し替え直後の1フレームだけ前ステージの記録が残り、
+  // スコアが一瞬跳ね上がる」ため、レンダー中に確定させる。
+  const bestRef = useRef({ index: -1, best: 1 });
+  if (bestRef.current.index !== stageIndex) {
+    bestRef.current = { index: stageIndex, best: path.length };
+  } else if (path.length > bestRef.current.best) {
+    bestRef.current.best = path.length;
+  }
+  const bestEaten = bestRef.current.best;
+
+  /* --- 現在スコア --- */
+  // 終了後は確定値だけを見せる（進行中ステージの二重計上を避ける）。
+  // クリア直後は加算待ち（演出中）なので、確定分を先に見せる。
+  const pendingScore = finished
+    ? 0
+    : cleared
+      ? total * plan.multiplier
+      // 進んだ手数ぶんを点にする（スタート地点にいるだけの 0 手では点にしない）
+      : Math.floor(Math.max(0, bestEaten - 1) * plan.multiplier * partialRate);
+  const shownScore = baseScore + pendingScore;
+
+  useEffect(() => { onScoreChange?.(shownScore); }, [shownScore, onScoreChange]);
+  useEffect(() => { onLevelChange?.(clearedCount); }, [clearedCount, onLevelChange]);
+
+  /* --- 終了処理 --- */
+  const finish = useCallback((finalScore, extraCleared = 0, reason = 'timeup') => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    finishedAtRef.current = Date.now();
+    // クリア演出の待機タイマーが残っていると、終了後に次ステージが立ち上がってしまう
+    if (clearTimerRef.current) {
+      clearTimeout(clearTimerRef.current);
+      clearTimerRef.current = null;
+    }
+    advancingRef.current = false;
+    setBaseScore(finalScore);
+    if (extraCleared) setClearedCount((n) => n + extraCleared);
+    setFinishReason(reason);
+    setFinished(true);
+    // 終了音は鳴らさない（結果画面への遷移音が続けて鳴るため）
+    onGameOver?.(finalScore);
+  }, [onGameOver]);
+
+  /* --- 制限時間 --- */
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (finishedRef.current) return;
+      const left = (deadlineRef.current - Date.now()) / 1000;
+      setRemain(left > 0 ? left : 0);
+    }, 100);
+    return () => clearInterval(id);
+  }, []);
+
+  // 時間切れ判定はスコアの最新値を使いたいので remain とは別の effect に置く
+  useEffect(() => {
+    if (remain > 0 || finishedRef.current) return;
+    // クリア演出中に時間切れになった場合、そのステージはクリア扱いで確定させる
+    finish(shownScore, cleared ? 1 : 0);
+  }, [remain, shownScore, cleared, finish]);
+
+  /* --- 操作 --- */
+  const pick = useCallback((cell) => {
+    if (finishedRef.current || advancingRef.current) return;
+    setGame((g) => {
+      // ビュー側のスナップショットではなく、最新の状態で隣接を再判定する
+      if (!movableFrom(g.stage, g.path).has(cell)) return g;
+      return { ...g, path: [...g.path, cell] };
+    });
+  }, []);
+
+  const reject = useCallback((cell) => {
+    // クリア演出中は movable が空になるため、触れば必ず「ブブー」が鳴ってしまう。叱らない。
+    if (finishedRef.current || advancingRef.current) return;
+    // 現在位置そのものをタップした場合も無音
+    if (cell === curRef.current) return;
+    const now = Date.now();
+    const last = lastTapRef.current;
+    // 直前に触ったグミの二度押しは叱らない。
+    // ここで窓を更新すると連打時に窓が滑り続け、フィードバックが恒久的に消える。
+    if (last.cell === cell && now - last.at < REPEAT_TAP_GRACE_MS) return;
+    lastTapRef.current = { cell, at: now };
+    shakeRef.current?.(cell);
+    playSound('ng', 0.4).catch(() => {});
+  }, []);
+
+  const pickWithMemo = useCallback((cell) => {
+    lastTapRef.current = { cell, at: Date.now() };
+    pick(cell);
+  }, [pick]);
+
+  const undo = useCallback(() => {
+    if (finishedRef.current || advancingRef.current) return;
+    setGame((g) => (g.path.length > 1 ? { ...g, path: g.path.slice(0, -1) } : g));
+    playSound('sound7', 0.5).catch(() => {});
+  }, []);
+
+  /**
+   * やりなおす。同じ盤面をリセットするのではなく、同じ難易度で別の問題を出す。
+   * 行き止まりに突き当たった子が、同じ配置で何度も詰まり続けるのを防ぐため。
+   * スコアはステージ番号で持つ最大到達数を使うので、引き直しても減らない。
+   */
+  const restart = useCallback(() => {
+    if (finishedRef.current || advancingRef.current) return;
+    const p = liveRef.current.plan;
+    const next = generateStage(p.size, p.difficulty);
+    setGame({ stage: next, path: [next.start] });
+    playSound('buttonClick', 0.5).catch(() => {});
+  }, []);
+
+  /** 途中でやめる。スコアはそのまま確定し、記念カードは作られる。 */
+  const giveUp = useCallback(() => {
+    if (finishedRef.current) return;
+    finish(baseScore + pendingScore, cleared ? 1 : 0, 'giveup');
+  }, [finish, baseScore, pendingScore, cleared]);
+
+  giveUpRef.current = giveUp;
+
+  /** キャラクターが移動を終えた（または次の移動で上書きされた）タイミングで音を鳴らす */
+  const handleLanded = useCallback((crossedFace) => {
+    playSound(crossedFace ? 'jump' : 'paltu', 0.5).catch(() => {});
+  }, []);
+
+  /* --- クリア → 次ステージ --- */
+  // 依存は cleared のみに絞り、必要な値は ref から読む。
+  // 依存配列が動いて cleanup が走ると advancingRef が立ったまま
+  // タイマーだけ消えて進行不能になるため。
+  liveRef.current = { total, plan, stageIndex, planAt, baseScore, finish };
+
+  useEffect(() => {
+    if (!cleared || finishedRef.current || advancingRef.current) return;
+    advancingRef.current = true;
+
+    const { total: t, plan: p } = liveRef.current;
+    const gained = t * p.multiplier;
+    playSound('bell', 0.6).catch(() => {});
+
+    clearTimerRef.current = setTimeout(() => {
+      clearTimerRef.current = null;
+      if (finishedRef.current) { advancingRef.current = false; return; }
+
+      const l = liveRef.current;
+      setBaseScore((s) => s + gained);
+      setClearedCount((n) => n + 1);
+
+      const nextIndex = l.stageIndex + 1;
+      const nextPlan = l.planAt(nextIndex);
+      if (!nextPlan) {
+        advancingRef.current = false;
+        l.finish(l.baseScore + gained);
+        return;
+      }
+      const nextStage = generateStage(nextPlan.size, nextPlan.difficulty);
+      setStageIndex(nextIndex);
+      setGame({ stage: nextStage, path: [nextStage.start] });
+      advancingRef.current = false;
+    }, CLEAR_DELAY_MS);
+  }, [cleared]);
+
+  // アンマウント時に待機中のタイマーを片付ける
+  useEffect(() => () => {
+    if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
+  }, []);
+
+  /* --- キーボード --- */
+  useEffect(() => {
+    const onKey = (e) => {
+      // 終了演出中の Esc は無視する（記録が保存されないまま TOP へ戻るのを防ぐ）
+      if (e.key === 'Escape') {
+        // Esc は「おわる」と同じ扱いにする。
+        // 以前は写真だけ残して記録が作られない孤児ディレクトリを生んでいた。
+        if (!finishedRef.current) { giveUpRef.current?.(); return; }
+        // 結果画面への遷移が起きなかった場合に詰まないよう、
+        // 一定時間が過ぎたら TOP への脱出口として通す。
+        if (Date.now() - finishedAtRef.current > 4000) onEscape?.();
+        return;
+      }
+      if (e.key === 'z' || e.key === 'Backspace') undo();
+      if (e.key === 'r') restart();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, restart, onEscape]);
+
+  /* --- 表示 --- */
+  const eaten = path.length;
+  const status = cleared
+    ? { tone: 'clear', text: 'ぜんぶ食べた！ CLEAR' }
+    : deadEnd
+      ? { tone: 'stuck', text: '進める先がなくなりました。1手もどすか、やりなおせます' }
+      : movable.has(stage.goal)
+        ? { tone: 'goal', text: 'のこり1つ。ゴールのグミが開きました' }
+        : null;
+
+  const urgent = remain <= 30;
+  const progressPct = Math.round((eaten / total) * 100);
+  const diffLabel = DIFFICULTY[plan.difficulty]?.label || plan.difficulty;
+
+  /* --- HUD 部品（左右レイアウトと重ねレイアウトで共用） --- */
+  const controlsDisabled = finished || cleared;
+  const btnBase = 'rounded-xl border font-bold transition-colors disabled:opacity-30';
+  const controls = (
+    <>
+      <button
+        onClick={undo}
+        disabled={path.length <= 1 || controlsDisabled}
+        className={`${btnBase} bg-white/85 hover:bg-white text-amber-950 border-white shadow-md ${
+          wide ? 'w-full px-5 py-5 text-2xl' : 'px-5 py-3 text-xl'
+        }`}
+      >
+        1手もどす
+      </button>
+      <button
+        onClick={restart}
+        disabled={controlsDisabled}
+        className={`${btnBase} bg-white/85 hover:bg-white text-amber-950 border-white shadow-md ${
+          wide ? 'w-full px-5 py-5 text-2xl' : 'px-5 py-3 text-xl'
+        }`}
+      >
+        やりなおす
+      </button>
+      <button
+        onClick={giveUp}
+        disabled={controlsDisabled}
+        className={`${btnBase} bg-white/60 hover:bg-white/80 text-amber-900 border-white/80 ${
+          wide ? 'w-full px-4 py-4 text-xl' : 'px-4 py-3 text-base'
+        }`}
+      >
+        おわる
+      </button>
+    </>
+  );
+
+  const progressBar = (
+    <div className="h-2 rounded-full bg-amber-900/20 overflow-hidden">
+      <div
+        className="h-full rounded-full transition-all duration-300"
+        style={{ width: `${progressPct}%`, background: 'linear-gradient(90deg,#ff7ab0,#ffa62b)' }}
+      />
+    </div>
+  );
+
+  const statusPill = status && (
+    <div
+      className={`px-5 py-2 rounded-full text-center font-bold shadow-lg ${
+        wide ? 'text-xl lg:text-2xl' : 'text-base sm:text-lg'
+      } ${
+        status.tone === 'clear'
+          ? 'bg-amber-300/90 text-amber-950'
+          : status.tone === 'stuck'
+            ? 'bg-slate-900/80 text-slate-100'
+            : 'bg-yellow-200/90 text-yellow-900'
+      }`}
+    >
+      {status.text}
+    </div>
+  );
+
+  const board = (extra) => (
+    <GummyBoard
+      stage={stage}
+      path={path}
+      movable={movable}
+      cleared={cleared}
+      onPick={pickWithMemo}
+      onReject={reject}
+      onLanded={handleLanded}
+      shakeRef={shakeRef}
+      {...extra}
+    />
+  );
+
+  return (
+    <div className="absolute inset-0 overflow-hidden select-none">
+      {/* 背景はスタート画面と同じ。盤面（GummyBoard）の canvas は透過なので後ろに敷ける。
+          盤面の描画と競合させたくないので、こちらのフレームレートは落としてある */}
+      <ShinyWaveBackground position="absolute" fps={20} />
+      {wide ? (
+        /* ===== PCモニタ向け：盤面は縦いっぱい、HUD は左右の余白へ ===== */
+        <div className="absolute inset-0 flex items-stretch">
+          {/* 左：残り時間・進行・スコア */}
+          <aside
+            className="shrink-0 flex flex-col justify-center gap-7 px-5 py-6 text-amber-950"
+            style={{ width: 'clamp(210px, 16vw, 300px)' }}
+          >
+            <div>
+              <div className="text-base tracking-widest text-amber-900/80 mb-1">のこり時間</div>
+              <div
+                className={`gold-heading tabular-nums leading-none ${urgent ? 'text-red-700' : 'text-orange-900'}`}
+                style={{ fontSize: 'clamp(3.25rem, 6vw, 5.2rem)' }}
+              >
+                {formatTime(remain)}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-baseline gap-2 tabular-nums mb-1">
+                <span className="text-base tracking-widest text-amber-900/80">たべた</span>
+                <span className="ml-auto">
+                  <span className="text-3xl font-bold">{eaten}</span>
+                  <span className="text-amber-900/70 text-lg"> / {total}</span>
+                </span>
+              </div>
+              {progressBar}
+              <div className="mt-2 text-base text-amber-900">
+                ステージ {stageIndex + 1}・{diffLabel}・{plan.size}×{plan.size}
+              </div>
+            </div>
+
+            <div className="border-t border-amber-900/25 pt-5 space-y-3">
+              <div>
+                <div className="text-base tracking-widest text-amber-900/80">スコア</div>
+                <div className="gold-heading text-4xl tabular-nums leading-tight text-orange-700">{shownScore}</div>
+              </div>
+              <div>
+                <div className="text-base tracking-widest text-amber-900/80">クリア</div>
+                <div className="gold-heading text-3xl tabular-nums leading-tight text-green-700">
+                  {clearedCount}
+                  <span className="text-lg font-medium text-amber-900/80"> ステージ</span>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          {/* 中央：盤面 */}
+          <div className="relative flex-1 min-w-0">
+            {board({ hudOverlay: false })}
+            {statusPill && (
+              <div className="absolute inset-x-0 top-3 flex justify-center pointer-events-none px-4">
+                {statusPill}
+              </div>
+            )}
+          </div>
+
+          {/* 右：操作と説明 */}
+          <aside
+            className="shrink-0 flex flex-col justify-center gap-3 px-5 py-6"
+            style={{ width: 'clamp(210px, 16vw, 300px)' }}
+          >
+            <div className="gold-heading text-xl mb-2 leading-snug">
+              つながったグミをぜんぶ食べて、ゴールをめざそう！
+            </div>
+            {controls}
+            <div className="mt-3 text-base leading-relaxed text-amber-900 space-y-1">
+              <p>光っているグミを タップ（クリック）で すすむ</p>
+              <p>まちがえたら「1手もどす」</p>
+              <p>こまったら「やりなおす」</p>
+              <p>とちゅうでやめるときは「おわる」</p>
+            </div>
+          </aside>
+        </div>
+      ) : (
+        /* ===== 幅が足りない・縦長の画面：従来どおり HUD を盤面へ重ねる ===== */
+        <>
+          {board()}
+
+          {/* 上部：残り時間と進行状況 */}
+          <div className="absolute top-0 inset-x-0 p-3 pointer-events-none">
+            <div className="mx-auto max-w-xl flex items-center gap-3 min-w-0">
+              <div
+                className={`gold-heading text-3xl sm:text-4xl tabular-nums leading-none shrink-0 ${urgent ? 'text-red-700' : 'text-orange-900'}`}
+              >
+                {formatTime(remain)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 text-amber-950 text-base tabular-nums font-bold">
+                  <span className="font-bold">{eaten}</span>
+                  <span className="text-amber-900/70">/ {total}</span>
+                  <span className="ml-auto text-sm text-amber-900">
+                    ステージ {stageIndex + 1}・{diffLabel}・{plan.size}×{plan.size}
+                  </span>
+                </div>
+                <div className="mt-1">{progressBar}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* 中央：状態メッセージ */}
+          {statusPill && (
+            <div className="absolute inset-x-0 top-[22%] flex justify-center pointer-events-none px-4">
+              {statusPill}
+            </div>
+          )}
+
+          {/* 下部：操作 */}
+          <div className="absolute bottom-0 inset-x-0 p-4 flex justify-center gap-3">
+            {controls}
+          </div>
+        </>
+      )}
+
+      {/* 終了オーバーレイ */}
+      {finished && (
+        <div className="absolute inset-0 bg-white/75 flex flex-col items-center justify-center text-amber-950">
+          <div className="gold-heading text-4xl mb-2">{finishReason === 'giveup' ? 'おつかれさま！' : 'タイムアップ！'}</div>
+          <div className="text-2xl text-amber-900">{clearedCount} ステージ クリア</div>
+          <div className="gold-heading text-5xl text-orange-700 mt-3 tabular-nums">{shownScore}</div>
+        </div>
+      )}
+    </div>
+  );
+}

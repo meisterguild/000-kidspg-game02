@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist/main",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "jsx": "preserve"
+  },
+  "include": [
+    "src/main/**/*",
+    "src/shared/types/**/*",
+    "src/shared/config/**/*",
+    "src/shared/utils/constants.ts",
+    "src/shared/utils/helpers.ts"
+  ],
+  "exclude": [
+    "src/renderer"
+  ]
+}

@@ -1,0 +1,254 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 776563402348737,
+      "steps": 18,
+      "cfg": 7,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "13",
+        0
+      ],
+      "positive": [
+        "23",
+        0
+      ],
+      "negative": [
+        "23",
+        1
+      ],
+      "latent_image": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "4": {
+    "inputs": {
+      "ckpt_name": "originByN0utis_origin15V2.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": [
+        "15",
+        0
+      ],
+      "clip": [
+        "13",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "text": "realistic, photo, photorealistic, blurry, distorted face, deformed body, ugly, lowres, bad anatomy, disfigured, mutated hands, extra limbs, watermark, signature, nsfw, dark mood, horror, surreal, gothic, low quality\n",
+      "clip": [
+        "13",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "${filename_prefix}",
+      "images": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "10": {
+    "inputs": {
+      "image": "${photo_png}"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "11": {
+    "inputs": {
+      "pixels": [
+        "10",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "13": {
+    "inputs": {
+      "lora_name": "[LoRA] White star  星極 Concept (With dropout & noise version).safetensors",
+      "strength_model": 1.0000000000000002,
+      "strength_clip": 1.0000000000000002,
+      "model": [
+        "4",
+        0
+      ],
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "14": {
+    "inputs": {
+      "model": "wd-eva02-large-tagger-v3",
+      "threshold": 0.35,
+      "character_threshold": 1,
+      "replace_underscore": false,
+      "trailing_comma": false,
+      "exclude_tags": "real_life_insert, realistic, watermark, signature, photo, duplicate, extra arms, error, closed_eyes, half-closed_eyes",
+      "image": [
+        "27",
+        0
+      ]
+    },
+    "class_type": "WD14Tagger|pysssss",
+    "_meta": {
+      "title": "WD14 Tagger 🐍"
+    }
+  },
+  "15": {
+    "inputs": {
+      "string_a": "ghibli style, chibi emote, centered composition, face centered, close-up portrait, looking at viewer, cute anime character, bright lighting, child-friendly, high resolution, colorful, soft shading, clean lineart, vibrant background, cheerful expression, upper body, close-up portrait, open_eyes, angelic smile, gentle smile, innocent expression,\n",
+      "string_b": [
+        "14",
+        0
+      ],
+      "delimiter": ","
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "Concatenate"
+    }
+  },
+  "18": {
+    "inputs": {
+      "text_0": "ghibli style, chibi emote, centered composition, face centered, close-up portrait, looking at viewer, cute anime character, bright lighting, child-friendly, high resolution, colorful, soft shading, clean lineart, vibrant background, cheerful expression, upper body, close-up portrait, open_eyes, angelic smile, gentle smile, innocent expression,\n,solo, shirt, 1boy, monochrome, male_focus, greyscale, parted_lips, collared_shirt, black_background, portrait, outline, oekaki, silhouette, bald",
+      "text": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "ShowText|pysssss",
+    "_meta": {
+      "title": "Show Text 🐍"
+    }
+  },
+  "23": {
+    "inputs": {
+      "strength": 0.8500000000000002,
+      "start_percent": 0,
+      "end_percent": 1,
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "control_net": [
+        "25",
+        0
+      ],
+      "image": [
+        "27",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "ControlNetApplyAdvanced",
+    "_meta": {
+      "title": "Apply ControlNet"
+    }
+  },
+  "25": {
+    "inputs": {
+      "control_net_name": "1.5\\control_v11p_sd15_softedge_fp16.safetensors"
+    },
+    "class_type": "ControlNetLoader",
+    "_meta": {
+      "title": "Load ControlNet Model"
+    }
+  },
+  "26": {
+    "inputs": {
+      "images": [
+        "27",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "27": {
+    "inputs": {
+      "safe": "enable",
+      "resolution": 512,
+      "image": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "HEDPreprocessor",
+    "_meta": {
+      "title": "HED Soft-Edge Lines"
+    }
+  }
+}

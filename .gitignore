@@ -1,0 +1,100 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+/build
+/dist
+/release
+
+# misc
+.DS_Store
+*.pem
+*.tar.gz
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+.env
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+
+# editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# KidsPG
+.claude/
+results/
+results*/
+docs/memorial_site_src/card_images/*
+docs/memorial_site_src/card_images.zip
+docs/memorial_site_src/split/card_images/*
+docs/memorial_site_src/split/card_images.zip
+# 昨年のメモリアルカード（実在の子どもの顔を含む）は git 管理下に置かない
+docs/memorial_site_src/split/card_images.part*
+
+# 検証ツールの一時出力（tools/comfyui-smoke.cjs）
+tmp/
+
+assets_2026_draft/
+
+# ComfyUI を画面なしで起動したときのログ（start-kidspg.bat が作る）
+logs/
+
+# ============================================================
+#  2026-09-08 GitHub 公開時の取り決め
+#
+#  このリポジトリは **今年（2026）の「AIグミパク！」だけ** を対象にする。
+#  昨年（2025）の「よけまくり中」の資材とコードは追跡しない。
+# ============================================================
+
+# 昨年の記念サイト資材。**実在の子どもの AI ポートレートとニックネームを含む**
+# メモリアルカードや、イベント紹介の PPTX / PDF が入っている。
+# 上の card_images 系の除外だけでは直置きのファイルが漏れていたため、
+# フォルダごと対象外にする。ファイルはローカルには残してある。
+docs/memorial_site_src/
+
+# 昨年の「よけまくり中」用アセット。今年は参照していない
+# （assets.ts のコメントも「昨年のタイトルなので参照しない」と明記）
+src/renderer/assets/images/title_image_01.png
+src/renderer/assets/images/title_image_02.png
+src/renderer/assets/images/title_image_03.png
+src/renderer/assets/images/title_image_04.png
+src/renderer/assets/images/sprite_items.png
+src/renderer/assets/images/sprite_items.xcf
+
+# 昨年のスプライト確認ページ。存在しないアセットキーを参照していて
+# **コンパイルが通らない**ため tsconfig の exclude で型検査から外されている。
+# どこからも import されていない
+src/renderer/test/SpriteViewerTest.tsx
+README_SPRITE_TEST.md
+
+# 昨年の結果フォルダを例示する手動テスト。参照なし
+test-memorial-card.js
+
+# Next.js の雛形の残骸（このアプリは Vite + Electron で Next.js は使っていない）
+next-env.d.ts
+
+# 昨年のランキング画面のスクリーンショット。**実在の人物の AI ポートレート**を
+# 載せたカードが写っている（カードの意匠も「よけまくり中」で今年のものではない）
+docs/ranking_ux_bug1.png

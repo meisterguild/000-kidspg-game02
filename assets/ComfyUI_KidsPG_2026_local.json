@@ -1,0 +1,177 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 933981829030027,
+      "steps": 8,
+      "cfg": 5,
+      "sampler_name": "euler",
+      "scheduler": "sgm_uniform",
+      "denoise": 0.6,
+      "model": [
+        "18",
+        0
+      ],
+      "positive": [
+        "10",
+        0
+      ],
+      "negative": [
+        "10",
+        1
+      ],
+      "latent_image": [
+        "14",
+        0
+      ]
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "DreamShaper_8_pruned.safetensors"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "anime style portrait of a cheerful child, gummy candy world, translucent glossy skin highlight, jelly-like shine, centered composition, face centered, upper body, looking at viewer, open eyes, detailed eyes, sharp pupils, symmetrical face, gentle smile, innocent expression, bright lighting, soft rim light, pastel colorful background, soft shading, clean lineart, child-friendly, wearing a colorful crew neck shirt, clothed, covered shoulders, high quality, masterpiece, best quality",
+      "clip": [
+        "18",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "realistic, photo, photorealistic, blurry, distorted face, deformed body, ugly, lowres, bad anatomy, disfigured, mutated hands, extra limbs, watermark, signature, nsfw, dark mood, horror, surreal, gothic, low quality, worst quality, deformed pupils, asymmetrical eyes, extra eyes, mustache, beard, facial hair, text, logo, bare shoulders, off-shoulder, topless, nude, undressed, cleavage, exposed chest, exposed skin on chest, swimsuit, lingerie",
+      "clip": [
+        "18",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "13",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "${filename_prefix}",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  },
+  "10": {
+    "class_type": "ControlNetApplyAdvanced",
+    "inputs": {
+      "strength": 0.85,
+      "start_percent": 0,
+      "end_percent": 0.7,
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "control_net": [
+        "15",
+        0
+      ],
+      "image": [
+        "12",
+        0
+      ],
+      "vae": [
+        "13",
+        0
+      ]
+    }
+  },
+  "11": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "${photo_png}"
+    }
+  },
+  "12": {
+    "class_type": "Canny",
+    "inputs": {
+      "low_threshold": 0.25,
+      "high_threshold": 0.6,
+      "image": [
+        "20",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "sd-vae-ft-mse.safetensors"
+    }
+  },
+  "14": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "20",
+        0
+      ],
+      "vae": [
+        "13",
+        0
+      ]
+    }
+  },
+  "15": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "control_v11p_sd15_canny.safetensors"
+    }
+  },
+  "18": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "Hyper-SD15-8steps-CFG-lora.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "clip": [
+        "4",
+        1
+      ]
+    }
+  },
+  "20": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 448,
+      "height": 448,
+      "crop": "center",
+      "image": [
+        "11",
+        0
+      ]
+    }
+  }
+}

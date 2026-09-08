@@ -1,0 +1,201 @@
+{
+  "_comment_game_settings": "ゲーム全体のパラメータ設定（3Dグミ一筆食べパズル）",
+  "game": {
+    "_comment_time_limit": "1プレイの制限時間（秒）。昨年のアプリ内所要は中央値88秒・p90 119秒。長くするほど当日さばける人数が減る（120秒→約116人／90秒→約140人／75秒→約157人＝昨年並み）。**ただし本番PCはCPU実行で1枚あたり120〜170秒かかるため、短くするとComfyUIのキューが発散する**（引き継ぎメモ_20260903.md §2）。2026-09-03に120秒へ決定。リハーサルで最終確定すること",
+    "timeLimitSeconds": 120,
+    "_comment_partial_score": "進行中ステージの部分点率。2026-09-04 に 0 → 0.35 へ変更（途中まで食べた面にも点が入る）。0 にすると「クリアした面だけが点になる」＝子どもに「ぜんぶ食べきれた面だけが点になる」と説明でき、スコアが離散値になる（2026-09-02 はその判断だった）。0 以外にするとスコアは連続値になるため、rankThresholds の見直しとあわせて考えること",
+    "partialScoreRate": 0.35,
+    "_comment_stage_progression": "ステージ進行。クリアするたびに次の要素へ進む。multiplier はグミ1個あたりの得点。※一律にしているのは「グミ1こ＝8ポイント」と子どもに説明でき、スコアが食べた総数に比例して素直に伸びるため。2026-09-07 に **全面 4×4** へ変更した（5×5 は盤の見た目が複雑で読み取りづらい）。難易度は core.js の DIFFICULTY が **2つの別の軸** で決める。ratio が経路の長さ（＝所要時間とスコア。**これは難しさではない**）、minCriticals が **間違えると詰む判断の数**（＝難しさ）。後者は solve.js のソルバで数え、目標に届く盤面が出るまで引き直す。実測（tools/measure-stages.mjs --deep・各200回の中央値）ではグミ数 11 / 14 / 24 / 31 / 36 に対して難所が 0 / 5 / 9 / 12 / 14（変更前は 0 / 0 / 0 / 2 / 6 しかなく、長さだけあって考える場面が無かった）。1面は操作を覚えるための一本道（判断ゼロ）で必ずクリアできる。**難しさを変えたいときは ratio ではなく minCriticals を動かすこと**（長さが変わらないので rankThresholds を再計算せずに済む）。**子どもの初見クリア率は測れていないのでリハーサルで確定すること**",
+    "stageProgression": [
+      {
+        "size": 4,
+        "difficulty": "veasy",
+        "multiplier": 8
+      },
+      {
+        "size": 4,
+        "difficulty": "easy",
+        "multiplier": 8
+      },
+      {
+        "size": 4,
+        "difficulty": "normal",
+        "multiplier": 8
+      },
+      {
+        "size": 4,
+        "difficulty": "hard",
+        "multiplier": 8
+      },
+      {
+        "size": 4,
+        "difficulty": "vhard",
+        "multiplier": 8
+      }
+    ],
+    "_comment_repeat_last": "最終ステージをクリアしても、同じ設定で出題し続けるか",
+    "repeatLastStage": true,
+    "_comment_level_up_score_interval": "レベル表示の算出間隔（helpers.calculateLevel が参照）",
+    "levelUpScoreInterval": 60,
+    "_comment_max_stages": "1プレイで出題する最大ステージ数。**0 で上限なし＝時間切れだけが終了条件**。6 にしていたため、易しい面を速く抜けると残り時間があるのにゲームが終わっていた（2026-09-02 修正）",
+    "maxStages": 0,
+    "_comment_rank_thresholds": "クリアした面の数がそのままランクになるよう置いた値（0面=初心者、1面=アマチュア、…7面以上=レジェンド）。カード背景8種とランクが1対1で対応する。2026-09-07 の構成（全面4×4・グミ数 11/14/24/31/36・multiplier 8）での累計スコアは 88 / 200 / 392 / 640 / 928 / 1216 / 1504 で、この値はそれを降順に並べたもの。部分点（partialScoreRate=0.35）で進行中の面にも点が入るが、どの段でも次の閾値には届かないことを確認済み（最も際どいのは4面クリア 640 ＋ 5面目の部分点 最大 95 = 735 < 928）。※stageProgression か multiplier か DIFFICULTY の ratio を変えたらこの値も再計算が必要。`node tools/measure-stages.mjs --plan` が実測から候補値と部分点の点検を出す",
+    "rankThresholds": [
+      1504,
+      1216,
+      928,
+      640,
+      392,
+      200,
+      88
+    ]
+  },
+  "_comment_comfyui_settings": "ComfyUI画像変換システム設定。ローカルPC(GPU無し)とAIサーバー(GPU有り)を activeProfile の1語で切り替える",
+  "comfyui": {
+    "_comment_active_profile": "使用するプロファイル名。profiles のキーから選ぶ。存在しない名前を書いた場合は黙って既定へ倒さず起動時に警告する（重いワークフローを低スペック機で回して気づかない事故を防ぐため）。生成が間に合わないときは local（inputSize 384・実測170秒）→ local_light（inputSize 320・実測123秒）へ向けて再起動する。ただし 320 は実写で画質が落ちるので最後の手段。1枚あたりの実測と画質の落ち方は README の「1枚あたりの生成時間と、間に合わないときの退避」を参照",
+    "activeProfile": "local",
+    "_comment_output_prefix": "SaveImage の filename_prefix に使う接頭辞。プロファイル側には置かない。image-composition-config.ts が photo_anime_ をハードコードで探すため、変更するとカードが作られなくなる",
+    "outputPrefix": "photo_anime",
+    "_comment_generation": "生成パラメータの共通既定値。プロファイル側の generation で上書きされる。**ここに書いた値がワークフロー JSON（assets/ComfyUI_KidsPG_2026_*.json）の同名の値を上書きする**（テンプレ側の値は ComfyUI 単体で開いたときのフォールバック）。テスト・設定画面から編集して保存できる。モデルに紐づくプロンプトは共通側には置かず、プロファイル側だけに書くこと",
+    "_comment_profiles": "接続先とワークフローの組。省略した項目は下の共通設定から埋まる",
+    "profiles": {
+      "local": {
+        "label": "ローカルPC（GPU無し／CPU実行）",
+        "baseUrl": "http://127.0.0.1:8188",
+        "_comment_template": "低スペック向けの軽量ワークフロー。解像度とステップを落として数十秒で返すことを狙う",
+        "templatePath": "assets/ComfyUI_KidsPG_2026_local.json",
+        "maxConcurrentJobs": 1,
+        "timeouts": {
+          "upload": 60000,
+          "processing": 600000,
+          "queue": 900000
+        },
+        "generation": {
+          "_comment": "DreamShaper 8（SD1.5）+ Hyper-SD15-8steps-CFG-lora 向け。steps は LoRA が前提とする 8。denoise は 2026-09-07 に 0.6 → 0.9 へ上げた。0.6 では実写に軽くフィルタがかかった程度で、教室の背景がそのまま残り「アニメ風のグミ世界の似顔絵」になっていなかった。実測（同一シード・384）で 0.6=写真のまま / 0.75=ほぼ写真 / 0.9=アニメ絵になり本人性も残る / 1.0=アニメ絵だが写真は輪郭しか使われない。**denoise を変えても生成時間は変わらない**（169〜177秒。サンプリング回数は steps のまま）ので、画質の代償なしに絵柄を動かせる。1.0 にすると workflow-template.ts が警告を出す（写真が輪郭しか使われないため）。**denoise を下げても ComfyUI のサンプリング回数は steps のまま**（comfy/samplers.py の set_steps は new_steps=int(steps/denoise) でスケジュールを引き伸ばし、末尾 steps+1 本を使う）ので、steps を増やすとその分だけ CPU 時間が伸びる。 ／ inputSize は 2026-09-07 に 448 → 384 へ落とした（実測 169〜173秒・448比 -32%）。🔴 **画質の判断は必ず実写の顔で行うこと。** dummy_photo.png はもとからアニメ絵なので、解像度を下げても差がほとんど見えない。実写・同一シードで比べると 448=崩れなし / 384=崩れなし / 320=顔が流れ眼鏡の形と色が変わる / 256=背景が色帯に潰れて破綻。SD1.5 は 512x512 で学習されたモデルなので、下げるほど構図と細部の一貫性が落ちる。448 で既に下限近く、320 以下は実用外。比べ直すには node tools/compare-generation.cjs --photo results/<日時>/photo_<日時>.png",
+          "denoise": 0.9,
+          "steps": 8,
+          "cfg": 5,
+          "controlnetStrength": 0.85,
+          "controlnetStartPercent": 0,
+          "controlnetEndPercent": 0.7,
+          "cannyLowThreshold": 0.25,
+          "cannyHighThreshold": 0.6,
+          "inputSize": 384,
+          "positivePrompt": "anime style portrait of a cheerful child, gummy candy world, translucent glossy skin highlight, jelly-like shine, centered composition, face centered, upper body, looking at viewer, open eyes, detailed eyes, sharp pupils, symmetrical face, gentle smile, innocent expression, bright lighting, soft rim light, pastel colorful background, soft shading, clean lineart, child-friendly, wearing a colorful crew neck shirt, clothed, covered shoulders, high quality, masterpiece, best quality",
+          "negativePrompt": "realistic, photo, photorealistic, blurry, distorted face, deformed body, ugly, lowres, bad anatomy, disfigured, mutated hands, extra limbs, watermark, signature, nsfw, dark mood, horror, surreal, gothic, low quality, worst quality, deformed pupils, asymmetrical eyes, extra eyes, mustache, beard, facial hair, text, logo, bare shoulders, off-shoulder, topless, nude, undressed, cleavage, exposed chest, exposed skin on chest, swimsuit, lingerie"
+        }
+      },
+      "local_light": {
+        "label": "ローカルPC・画質を落とした退避用（CPU実行）",
+        "baseUrl": "http://127.0.0.1:8188",
+        "_comment_template": "接続先とワークフローは local と同じ。違うのは inputSize だけ（384 → 320）。生成が間に合わないときに activeProfile をこちらへ向けて**アプリを再起動**する",
+        "templatePath": "assets/ComfyUI_KidsPG_2026_local.json",
+        "maxConcurrentJobs": 1,
+        "timeouts": {
+          "upload": 60000,
+          "processing": 600000,
+          "queue": 900000
+        },
+        "generation": {
+          "_comment": "local と同じモデル・同じプロンプトで、inputSize だけ 384 → 320 に落としたもの（実測 123秒）。🔴 **画質は確実に落ちる**（実写で顔の造作が流れ、眼鏡の形と色が変わる）。生成が間に合わないときの最後の手段で、平常時に使うものではない。256 も試したが背景が色帯に潰れて破綻したため、これより下は用意していない。それでも足りないなら AI 変換を切る判断のほうが早い（README の「AI変換を当日オフにする」）。steps は Hyper-SD の LoRA が 8 を前提にしているので下げないこと。denoise を下げても**時間は縮まない**（サンプリング回数は steps のままなので）",
+          "denoise": 0.9,
+          "steps": 8,
+          "cfg": 5,
+          "controlnetStrength": 0.85,
+          "controlnetStartPercent": 0,
+          "controlnetEndPercent": 0.7,
+          "cannyLowThreshold": 0.25,
+          "cannyHighThreshold": 0.6,
+          "inputSize": 320,
+          "positivePrompt": "anime style portrait of a cheerful child, gummy candy world, translucent glossy skin highlight, jelly-like shine, centered composition, face centered, upper body, looking at viewer, open eyes, detailed eyes, sharp pupils, symmetrical face, gentle smile, innocent expression, bright lighting, soft rim light, pastel colorful background, soft shading, clean lineart, child-friendly, wearing a colorful crew neck shirt, clothed, covered shoulders, high quality, masterpiece, best quality",
+          "negativePrompt": "realistic, photo, photorealistic, blurry, distorted face, deformed body, ugly, lowres, bad anatomy, disfigured, mutated hands, extra limbs, watermark, signature, nsfw, dark mood, horror, surreal, gothic, low quality, worst quality, deformed pupils, asymmetrical eyes, extra eyes, mustache, beard, facial hair, text, logo, bare shoulders, off-shoulder, topless, nude, undressed, cleavage, exposed chest, exposed skin on chest, swimsuit, lingerie"
+        }
+      },
+      "server": {
+        "label": "AIサーバー rag-poc（NVIDIA GB10）",
+        "baseUrl": "http://192.168.1.10:8188",
+        "_comment_template": "本来の画質のワークフロー（SDXL 1024x1024 / ControlNet-Union / 8steps）",
+        "templatePath": "assets/ComfyUI_KidsPG_2026_01.json",
+        "maxConcurrentJobs": 1,
+        "timeouts": {
+          "upload": 60000,
+          "processing": 600000,
+          "queue": 300000
+        },
+        "generation": {
+          "_comment": "Animagine XL 4.0 + Hyper-SDXL-8steps-CFG-lora 向け。プロンプトは Danbooru タグ順（主体→一般→品質タグ）に合わせてある。steps は LoRA が前提とする 8（denoise を下げてもサンプリング回数は steps のまま）",
+          "denoise": 0.6,
+          "steps": 8,
+          "cfg": 5,
+          "controlnetStrength": 0.8,
+          "controlnetStartPercent": 0,
+          "controlnetEndPercent": 1,
+          "cannyLowThreshold": 0.25,
+          "cannyHighThreshold": 0.6,
+          "inputSize": 1024,
+          "positivePrompt": "solo, child, upper body, looking at viewer, eyes open, detailed eyes, symmetrical face, gentle smile, cheerful, glossy translucent skin, jelly texture, gummy candy, colorful pastel background, sparkle, bright lighting, soft rim light, clean lineart, soft shading, crew neck shirt, colorful shirt, clothed, covered shoulders, masterpiece, high score, great score, absurdres",
+          "negativePrompt": "lowres, bad anatomy, bad hands, text, error, missing finger, extra digits, fewer digits, cropped, worst quality, low quality, low score, bad score, average score, signature, watermark, username, blurry, photo, photorealistic, realistic, 3d, horror, scary, dark mood, gothic, nsfw, nude, topless, undressed, bare shoulders, off-shoulder, cleavage, exposed chest, swimsuit, lingerie, mustache, beard, facial hair, extra eyes, asymmetrical eyes, deformed pupils"
+        }
+      }
+    },
+    "_comment_polling_interval": "キュー状態チェック間隔（ミリ秒）",
+    "pollingInterval": 2000,
+    "_comment_max_concurrent_jobs": "ComfyUI へ同時に投入するジョブ数。ComfyUI 側は prompt を1件ずつ直列に実行するため、大きくしても速くならずキューに積まれるだけになる。1 にして、超過分はアプリ側のキューで待たせる",
+    "maxConcurrentJobs": 1,
+    "_comment_timeouts": "既定のタイムアウト（ミリ秒）。プロファイル側に書けば上書きされる。upload は /upload/image の、processing は /prompt POST 1回の HTTP タイムアウトであって生成時間の上限ではない。生成の待ち時間を打ち切るのは queue のほう（超過時は ComfyUI のキューからも削除する）",
+    "timeouts": {
+      "upload": 60000,
+      "processing": 600000,
+      "queue": 900000
+    },
+    "_comment_retry_settings": "※未実装。comfyui-worker.ts はこの値を参照していない。「3回リトライされるはず」という前提で当日の判断をしないこと",
+    "retry": {
+      "maxAttempts": 3,
+      "delayMs": 1000
+    }
+  },
+  "_comment_memorial_card_settings": "記念カード画像合成システム設定",
+  "memorialCard": {
+    "_comment_enabled": "記念カード生成機能の有効/無効",
+    "enabled": true,
+    "_comment_magick_timeout": "ImageMagick実行タイムアウト（ミリ秒）",
+    "magickTimeout": 60000,
+    "_comment_card_base_images_dir": "背景カード画像ディレクトリ。2026-09-04 に意匠を昨年のキラキラ版（虹色ホログラム枠＋星空・ランクごとに地色が変わる）へ戻し、右上バッジだけを「AIグミパク！」に差し替えた。地の素材は card_base_images、差し替え前のミント単色版は superseded_20260904/ にある",
+    "cardBaseImagesDir": "card_base_images"
+  },
+  "_comment_camera_settings": "カメラ撮影設定",
+  "camera": {
+    "_comment_resolution": "撮影解像度設定（ピクセル）",
+    "width": 300,
+    "height": 300,
+    "_comment_format": "画像フォーマット",
+    "format": "image/png"
+  },
+  "_comment_results_settings": "プレイ結果履歴設定",
+  "results": {
+    "_comment_max_recent": "最近のプレイ結果最大保存数",
+    "maxRecent": 30,
+    "_comment_max_ranking": "ランキング最大保存数",
+    "maxRanking": 10,
+    "_comment_startup_check": "起動時の整合性点検。新しい順に何件まで見るか（0 でも results.json が参照している回は必ず点検する）と、全体の時間上限。OneDrive のクラウド専用ファイルを読むと実体化で時間がかかるため、超えたら打ち切って残りは tools/retry-failed.cjs に任せる",
+    "startupCheckLimit": 200,
+    "startupCheckBudgetMs": 10000
+  },
+  "_comment_ranking_display_settings": "ランキング表示画面設定",
+  "ranking": {
+    "_comment_pagination": "ページネーション設定",
+    "pagination": {
+      "_comment_cards_per_page": "1ページあたりのカード表示数",
+      "cardsPerPage": 5,
+      "_comment_interval_seconds": "ページ切り替え間隔（秒）",
+      "intervalSeconds": 8,
+      "_comment_transition_duration_ms": "ページ切り替えにかける時間（ミリ秒）。前半で今のページを左へ送り出し、後半で次のページを右から滑り込ませる（それぞれ半分ずつ）。2026-09-03 に 1000→600 へ短縮",
+      "transitionDurationMs": 600
+    },
+    "_comment_card_settings": "カード表示設定",
+    "card": {
+      "_comment_tile_size": "※未実装。この値を読んでいる箇所は無い。カードの大きさは1ページあたりの枚数（cardsPerPage）とウィンドウの大きさから自動で決まる（枠に object-contain で収める）ため、ここを変えても表示は変わらない。大きく見せたいときは cardsPerPage を減らすこと",
+      "tileSize": 300
+    }
+  }
+}

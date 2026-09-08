@@ -1,0 +1,187 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 933981829030027,
+      "steps": 8,
+      "cfg": 5,
+      "sampler_name": "euler",
+      "scheduler": "sgm_uniform",
+      "denoise": 0.6,
+      "model": [
+        "18",
+        0
+      ],
+      "positive": [
+        "10",
+        0
+      ],
+      "negative": [
+        "10",
+        1
+      ],
+      "latent_image": [
+        "14",
+        0
+      ]
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "animagine-xl-4.0.safetensors"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "solo, child, upper body, looking at viewer, eyes open, detailed eyes, symmetrical face, gentle smile, cheerful, glossy translucent skin, jelly texture, gummy candy, colorful pastel background, sparkle, bright lighting, soft rim light, clean lineart, soft shading, crew neck shirt, colorful shirt, clothed, covered shoulders, masterpiece, high score, great score, absurdres",
+      "clip": [
+        "18",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "lowres, bad anatomy, bad hands, text, error, missing finger, extra digits, fewer digits, cropped, worst quality, low quality, low score, bad score, average score, signature, watermark, username, blurry, photo, photorealistic, realistic, 3d, horror, scary, dark mood, gothic, nsfw, nude, topless, undressed, bare shoulders, off-shoulder, cleavage, exposed chest, swimsuit, lingerie, mustache, beard, facial hair, extra eyes, asymmetrical eyes, deformed pupils",
+      "clip": [
+        "18",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "13",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "${filename_prefix}",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  },
+  "10": {
+    "class_type": "ControlNetApplyAdvanced",
+    "inputs": {
+      "strength": 0.8,
+      "start_percent": 0,
+      "end_percent": 1,
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "control_net": [
+        "16",
+        0
+      ],
+      "image": [
+        "12",
+        0
+      ],
+      "vae": [
+        "13",
+        0
+      ]
+    }
+  },
+  "11": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "${photo_png}"
+    }
+  },
+  "12": {
+    "class_type": "Canny",
+    "inputs": {
+      "low_threshold": 0.25,
+      "high_threshold": 0.6,
+      "image": [
+        "20",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "sdxl_vae.safetensors"
+    }
+  },
+  "14": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "20",
+        0
+      ],
+      "vae": [
+        "13",
+        0
+      ]
+    }
+  },
+  "15": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "controlnet-union-sdxl-promax.safetensors"
+    }
+  },
+  "16": {
+    "class_type": "SetUnionControlNetType",
+    "inputs": {
+      "type": "canny/lineart/anime_lineart/mlsd",
+      "control_net": [
+        "15",
+        0
+      ]
+    }
+  },
+  "18": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "Hyper-SDXL-8steps-CFG-lora.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "clip": [
+        "4",
+        1
+      ]
+    }
+  },
+  "20": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 1024,
+      "crop": "center",
+      "image": [
+        "11",
+        0
+      ]
+    }
+  }
+}
