@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AIサーバー（rag-poc）の共有ストアから、2026年版ワークフローに必要なモデルを
+# AIサーバーの共有ストアから、2026年版ワークフローに必要なモデルを
 # ローカルへ取り込む。**社内 LAN にいるなら HuggingFace から落とすより速い。**
 #
 #   使い方:  bash tools/fetch-models.sh [モデル置き場] [profile]
@@ -7,6 +7,18 @@
 #            bash tools/fetch-models.sh C:/WORK/AI/models all
 #
 #   profile: local（既定・当日使う SD1.5 の4本）/ server（SDXL の6本）/ all
+#
+# ■ 接続先の指定
+# REMOTE は **各自の ~/.ssh/config で定義した Host 名**を渡す。
+# 既定値は置いていない（個人の設定名をリポジトリへ持ち込まないため）。
+#
+#   ~/.ssh/config の例:
+#     Host ai-server
+#         HostName 192.168.1.10
+#         User <自分のアカウント>
+#         IdentityFile ~/.ssh/id_ed25519
+#
+#   REMOTE=ai-server bash tools/fetch-models.sh C:/WORK/AI/models local
 #
 # ■ サーバー上のモデルの在り処
 # HuggingFace の hub キャッシュがそのまま共有ストアになっている。
@@ -17,14 +29,14 @@
 # revision は落とした時期で変わるので、パスを決め打ちせず snapshots 配下を
 # find して readlink -f で実体へ解決している。
 # 直接見たいときは:
-#   ssh rag-poc 'ls /srv/llm/hf/hub | grep models--'
-#   ssh rag-poc 'du -sh /srv/llm/hf/hub/models--Lykon--DreamShaper'
+#   ssh "$REMOTE" 'ls /srv/llm/hf/hub | grep models--'
+#   ssh "$REMOTE" 'du -sh /srv/llm/hf/hub/models--Lykon--DreamShaper'
 #
 # キャッシュに無いものは、サーバー側の llm-catalog へダウンロードを積む:
 #   curl -s http://192.168.1.10:50050/api/queue
 #
 # 前提:
-#   - `ssh rag-poc` で AI サーバーへ入れること
+#   - `ssh "$REMOTE"` で AI サーバーへ入れること
 #   - llm-catalog のダウンロードキューが完了していること
 #     （状態確認: curl -s http://192.168.1.10:50050/api/queue）
 #
@@ -33,7 +45,13 @@
 #   そのため転送には scp ではなく `ssh ... cat > file` を使っている。
 set -uo pipefail
 
-REMOTE="${REMOTE:-rag-poc}"
+REMOTE="${REMOTE:-}"
+if [ -z "$REMOTE" ]; then
+  echo "REMOTE が未設定です。AI サーバーへの ssh Host 名を渡してください。"
+  echo "  例: REMOTE=ai-server bash tools/fetch-models.sh C:/WORK/AI/models local"
+  echo "  ~/.ssh/config での定義例はこのファイルの冒頭にあります。"
+  exit 1
+fi
 HF_ROOT="${HF_ROOT:-/srv/llm/hf/hub}"
 
 # 第1引数はモデル置き場（dl-models.sh / dl-models-local.sh と同じ意味）。

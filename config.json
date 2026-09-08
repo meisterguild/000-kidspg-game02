@@ -112,7 +112,7 @@
         }
       },
       "server": {
-        "label": "AIサーバー rag-poc（NVIDIA GB10）",
+        "label": "AIサーバー（NVIDIA GB10・社内LAN）",
         "baseUrl": "http://192.168.1.10:8188",
         "_comment_template": "本来の画質のワークフロー（SDXL 1024x1024 / ControlNet-Union / 8steps）",
         "templatePath": "assets/ComfyUI_KidsPG_2026_01.json",

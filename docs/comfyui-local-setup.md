@@ -1,7 +1,7 @@
 # ローカルPCでの ComfyUI 構築手順（2026年版）
 
 作成: 2026-09-01 夜間作業
-対象: Windows 11。AIサーバー（`ssh rag-poc`）を使わず、**ローカルPCだけ**でカード生成まで通す構成。
+対象: Windows 11。AIサーバー（`ssh "$REMOTE"`）を使わず、**ローカルPCだけ**でカード生成まで通す構成。
 
 > このPC（作業機）の実測環境は §5。**NVIDIA GPU が無いため CPU 実行**になっている。
 > 本番PCが決まったら §6 の手順で GPU 版へ切り替えること。
@@ -85,8 +85,8 @@ bash tools/fetch-models.sh C:/WORK/AI/models server
 中身を直接見るには:
 
 ```bash
-ssh rag-poc 'ls -d /srv/llm/hf/hub/models--* | sed "s|.*/models--||"'
-ssh rag-poc 'du -sh /srv/llm/hf/hub/models--ByteDance--Hyper-SD'
+ssh "$REMOTE" 'ls -d /srv/llm/hf/hub/models--* | sed "s|.*/models--||"'
+ssh "$REMOTE" 'du -sh /srv/llm/hf/hub/models--ByteDance--Hyper-SD'
 ```
 
 #### 🔴 いまサーバーにあるのは server（SDXL）用だけ
@@ -114,7 +114,7 @@ llm-catalog にダウンロードを積む（`curl http://192.168.1.10:50050/api
 
 ### HuggingFace から直接取る
 
-**rag-poc に届かない場所、または上表で「無し」のモデルはここから取る。**
+**AI サーバーに届かない場所、または上表で「無し」のモデルはここから取る。**
 2026-09-08 にスクリプトをリポジトリへ取り込んだ（それまでリポジトリ外の
 `C:\WORK\AI\dl-models.sh` を参照していて、clone しただけでは作り直せなかった）。
 

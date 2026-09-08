@@ -10,7 +10,7 @@
 # KidsPG 2026: ComfyUI 用モデルを HuggingFace から直接取得する。
 #   使い方: bash dl-models.sh [モデル置き場]  ... 既定 C:/WORK/AI/models
 #
-# AIサーバー(rag-poc)へ到達できない場所向けで、kidspg-game-2026/tools/fetch-models.sh の代替。
+# AIサーバーへ到達できない場所向けで、kidspg-game-2026/tools/fetch-models.sh の代替。
 # 回線が細い（単一ストリームで実測 0.8MB/s 程度、合計 10.6GB）ため各ファイルを並列に落とす。
 # **前夜から流しておくこと。** 有線接続推奨。
 #
