@@ -32,7 +32,7 @@
       "dest": "ai/ComfyUI",
       "kind": "dir",
       "required": true,
-      "note": "ComfyUI 本体（0.34.0 で動作確認）。**venv は入れないこと**——pyvenv.cfg の home がユーザー名込みの絶対パスを指すため、別PCへコピーすると壊れる（代わりに python_embeded を使う）。🔴 **input/ と output/ も入れないこと**——検証で使った実際の子どもの顔写真と、そこから作った絵が溜まっている（2026-09-09 の時点で input 44 件・output 51 件）。.git は 82MB あり不要（コミットは C:/WORK/AI/PINNED.md に記録）。",
+      "note": "ComfyUI 本体（0.34.0 で動作確認）。**venv は入れないこと**——pyvenv.cfg の home がユーザー名込みの絶対パスを指すため、別PCへコピーすると壊れる（代わりに python_embeded を使う）。🔴 **input/ と output/ も入れないこと**——検証で使った実際の子どもの顔写真と、そこから作った絵が溜まっている（2026-09-09 の時点で input 44 件・output 51 件）。.git は 82MB あり不要（コミットは C:/WORK/AI/PINNED.md に記録）。 🔴 temp/ には PreviewImage のプレビューが、user/ には開いたワークフローと入力画像名の履歴（comfyui.db）が溜まる。build-materials.ps1 は複製時に除くが、**そのあと検証で ComfyUI を起こすと再生成される**ので、パッケージを作る側で必ず見る。",
       "mustContain": [
         "main.py",
         "extra_model_paths.yaml"
@@ -43,7 +43,9 @@
       ],
       "mustBeEmpty": [
         "input",
-        "output"
+        "output",
+        "temp",
+        "user"
       ]
     },
     {

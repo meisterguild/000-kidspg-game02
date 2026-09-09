@@ -35,21 +35,50 @@ const fsp = require('fs/promises');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+const { resolveResultsDir, describeMissing } = require('./lib/resolve-results-dir.cjs');
 
 const argv = process.argv.slice(2);
 const has = (name) => argv.includes(`--${name}`);
-const flag = (name) => {
+/**
+ * 🔴 **値の書き忘れを黙って通してはいけない。**
+ * `--only --apply` のように値を書き忘れると、以前はここが null を返し、
+ * ONLY 無し＝**全プレイの生の顔写真を一括削除**になっていた。
+ * しかも写真を消した回は AI 画像を作り直せなくなる（このファイル冒頭の注意）。
+ * retry-failed.cjs は同じ罠にちゃんと検証を入れているのに、
+ * こちらだけ抜けていた（敵対的レビュー 2026-09-09 の指摘）。
+ */
+const flagErrors = [];
+const flag = (name, { pattern, example } = {}) => {
   const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : null;
+  if (i < 0) return null;
+  const next = argv[i + 1];
+  if (!next || next.startsWith('--')) {
+    flagErrors.push(`--${name} には値を指定してください` + (example ? `（例: --${name} ${example}）` : ''));
+    return null;
+  }
+  if (pattern && !pattern.test(next)) {
+    flagErrors.push(`--${name} の指定が想定の形ではありません: ${next}` + (example ? `（例: ${example}）` : ''));
+    return null;
+  }
+  return next;
 };
 
 const APPLY = has('apply');
 const INCLUDE_INCOMPLETE = has('include-incomplete');
-const ONLY = flag('only');
+const INCLUDE_UNVERIFIED = has('include-unverified');
+const ONLY = flag('only', { pattern: /^\d{8}_\d{6}$/, example: '20260912_101112' });
 
-const resultsDir = process.env.KIDSPG_RESULTS_DIR
-  ? path.resolve(process.env.KIDSPG_RESULTS_DIR)
-  : path.join(ROOT, 'results');
+if (flagErrors.length > 0) {
+  console.error('指定に誤りがあります:');
+  for (const e of flagErrors) console.error('  ・' + e);
+  console.error('\n何も消していません。');
+  process.exit(1);
+}
+
+// results の場所は tools/lib/resolve-results-dir.cjs に集めてある
+// （配布された ops から実行すると ops/results を見てしまい、当日動かなかった）
+const resolvedResults = resolveResultsDir(ROOT);
+const resultsDir = resolvedResults.dir;
 
 /** dist から PNG の完全性判定を借りる（アプリと同じ判定を使う） */
 const loadVerifier = () => {
@@ -68,7 +97,7 @@ const human = (bytes) => {
 
 const main = async () => {
   if (!fs.existsSync(resultsDir)) {
-    console.error(`results フォルダがありません: ${resultsDir}`);
+    console.error(describeMissing(resolvedResults));
     process.exit(1);
   }
   const { verifyPngFile } = loadVerifier();
@@ -107,7 +136,15 @@ const main = async () => {
       // 実体の中身まで見る。上半分だけのカードで「完成」と見なすと写真を失う
       const check = await verifyPngFile(cardPath);
       if (check.status === 'corrupt') reason = `カードが壊れている（${check.error}）`;
-      // unknown（読めなかった）は OneDrive 同期などで普通に起きるので完成扱いにする
+      // 🔴 unknown（読めなかった）を完成扱いにしてはいけない。
+      // ロック・ウイルス対策・同期の干渉で読めないことは普通に起きるが、
+      // **半端なカードの写真を先に消すと、あとから作り直せない**。
+      // retry-failed.cjs は同じ unknown を「触らない」として厳格に扱っており、
+      // 2つのツールで判断が真逆になっていた（敵対的レビュー 2026-09-09 の指摘）。
+      // どうしても消したい場合だけ --include-unverified を要求する。
+      else if (check.status === 'unknown' && !INCLUDE_UNVERIFIED) {
+        reason = `カードを確かめられなかった（${check.error || '読み取り失敗'}）`;
+      }
     }
 
     const size = (await fsp.stat(photoPath)).size;

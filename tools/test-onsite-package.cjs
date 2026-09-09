@@ -496,3 +496,83 @@ test('目録のモデル4本は config.json のワークフローが要求する
     );
   }
 });
+
+// ------------------------------------ 当日の救済ツールが配布された形で動くか
+
+/**
+ * 🔴 当日いちばん切迫した場面で使う道具が、**配布された形では1つも動かなかった**
+ * （敵対的レビュー 2026-09-09 の指摘）。当日PCの形はこうなっている:
+ *
+ *   C:\kidspg\app\results\   ← 実物
+ *   C:\kidspg\ops\           ← 救済ツールはここから実行する
+ *
+ * ツールは <ルート>/results を既定にしていたため ops\results を見て止まっていた。
+ */
+test('救済ツールは配布された ops から実物の results を見つける', () => {
+  const { resolveResultsDir, describeMissing } = require('./lib/resolve-results-dir.cjs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-onsite-'));
+  fs.mkdirSync(path.join(base, 'ops'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'app', 'results'), { recursive: true });
+  const r = resolveResultsDir(path.join(base, 'ops'));
+  assert.strictEqual(r.dir, path.join(base, 'app', 'results'), '実物を指していません');
+  fs.rmSync(base, { recursive: true, force: true });
+
+  // 開発機（自分の下に results がある）ではそちらを使う
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-repo-'));
+  fs.mkdirSync(path.join(repo, 'results'), { recursive: true });
+  assert.strictEqual(resolveResultsDir(repo).dir, path.join(repo, 'results'));
+  fs.rmSync(repo, { recursive: true, force: true });
+
+  // 見つからないときは**探した場所を全部見せる**（パスを出さないと当日直せない）
+  const none = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-none-'));
+  const msg = describeMissing(resolveResultsDir(none));
+  assert.match(msg, /探した場所/);
+  assert.match(msg, /KIDSPG_RESULTS_DIR/);
+  fs.rmSync(none, { recursive: true, force: true });
+});
+
+test('救済ツール3本とも、その判断を共有している', () => {
+  for (const rel of [
+    'tools/purge-photos.cjs',
+    'tools/place-regen-bat.cjs',
+    'tools/retry-failed.cjs',
+  ]) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert.match(src, /resolve-results-dir/, rel + ' が判断を共有していません');
+    // 自前で ROOT/results を既定にしていないこと（判断が2箇所に分かれる）
+    assert.ok(
+      !/:\s*path\.join\(ROOT, 'results'\)/.test(src),
+      rel + ' が自前で ROOT/results を既定にしています'
+    );
+  }
+});
+
+test('再生成.bat は node を PATH 前提で呼ばない', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'tools/place-regen-bat.cjs'), 'utf8');
+  // 🔴 当日PCの node は ops\node\node.exe だけで PATH に無い。
+  // 素の `node` を呼ぶと必ず 9009 で終わる
+  assert.match(src, /ops.*node.*node\.exe/, 'node を絶対パスで探していません');
+  assert.match(src, /NODEEXE/, 'node の探索結果を使っていません');
+  // 道具の置き場所も探すこと（app 側に tools は無い）
+  assert.match(src, /TOOLDIR/, 'ツールの置き場所を探していません');
+  // 失敗時に ComfyUI へ誤誘導しないこと
+  assert.ok(
+    !/ComfyUI が動いているか、上のメッセージを確認してください/.test(src),
+    '失敗の原因を ComfyUI に決めつけています'
+  );
+});
+
+test('写真削除ツールは値の書き忘れで全件消さない', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'tools/purge-photos.cjs'), 'utf8');
+  // 🔴 `--only --apply` で ONLY が null になり、全プレイの写真を消していた
+  assert.match(src, /flagErrors/, '指定の検証がありません');
+  // ⚠️ 正規表現で書くと \d が「数字」として解釈され、ソース中の
+  // リテラル \d{8}_\d{6} を探せない（最初はそれで空振りした）。文字列で探す。
+  assert.ok(
+    src.includes(String.raw`^\d{8}_\d{6}$`),
+    '日時の形を検査していません'
+  );
+  // 読めなかったカードを完成扱いにしないこと
+  assert.match(src, /include-unverified/, '確かめられなかったカードの扱いがありません');
+  assert.match(src, /確かめられなかった/, 'unknown を完成扱いにしています');
+});

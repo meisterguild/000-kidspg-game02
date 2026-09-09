@@ -34,6 +34,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+const { resolveResultsDir, describeMissing } = require('./lib/resolve-results-dir.cjs');
 const BAT_NAME = '再生成.bat';
 
 const argv = process.argv.slice(2);
@@ -47,9 +48,9 @@ const APPLY = has('apply');
 const REMOVE = has('remove');
 const ONLY = flag('only');
 
-const resultsDir = process.env.KIDSPG_RESULTS_DIR
-  ? path.resolve(process.env.KIDSPG_RESULTS_DIR)
-  : path.join(ROOT, 'results');
+// results の場所は tools/lib/resolve-results-dir.cjs に集めてある
+const resolvedResults = resolveResultsDir(ROOT);
+const resultsDir = resolvedResults.dir;
 
 /**
  * バッチの中身。
@@ -110,14 +111,54 @@ echo   ＊ ComfyUI が起動している必要があります
 echo   ＊ この機体では1枚あたり約3分かかります。閉じずに待ってください
 echo.
 set "KIDSPG_RESULTS_DIR=%~dp0.."
-node "%REPO%tools\\retry-failed.cjs" --apply --only ${dt}
+
+rem 🔴 **node を PATH 前提で呼んではいけない。**
+rem 当日PCの node は ops\\node\\node.exe だけで、PATH には入っていない。
+rem 以前は素の node を呼んでいたため、当日は必ず 9009
+rem （'node' は認識されていません）で終わっていた。しかも失敗表示が
+rem 「ComfyUI が動いているか確認」と**誤誘導**していた
+rem （敵対的レビュー 2026-09-09 の指摘）。
+rem ツールの置き場所も同じ。app 側に tools は無い（tools は ops だけ）。
+set "NODEEXE="
+if exist "%REPO%..\\ops\\node\\node.exe" set "NODEEXE=%REPO%..\\ops\\node\\node.exe"
+if not defined NODEEXE if exist "%REPO%node\\node.exe" set "NODEEXE=%REPO%node\\node.exe"
+if not defined NODEEXE where node > nul 2>&1 && set "NODEEXE=node"
+
+set "TOOLDIR="
+if exist "%REPO%..\\ops\\tools\\retry-failed.cjs" set "TOOLDIR=%REPO%..\\ops\\tools"
+if not defined TOOLDIR if exist "%REPO%tools\\retry-failed.cjs" set "TOOLDIR=%REPO%tools"
+
+if not defined NODEEXE (
+  echo   [中止] node が見つかりません。
+  echo          当日PCでは C:\\kidspg\\ops\\node\\node.exe を使います。
+  echo          パッケージのコピーが不完全かもしれません。
+  echo.
+  pause
+  endlocal
+  exit /b 1
+)
+if not defined TOOLDIR (
+  echo   [中止] 作り直しの道具が見つかりません（retry-failed.cjs）。
+  echo          当日PCでは C:\\kidspg\\ops\\tools\\ にあります。
+  echo.
+  pause
+  endlocal
+  exit /b 1
+)
+
+echo   使う node : %NODEEXE%
+echo.
+"%NODEEXE%" "%TOOLDIR%\\retry-failed.cjs" --apply --only ${dt}
 set "RC=%errorlevel%"
 echo.
 if "%RC%"=="0" (
   echo   終わりました。フォルダの memorial_card_${dt}.png を確認してください
 ) else (
   echo   [失敗] 終了コード %RC%
-  echo   ComfyUI が動いているか、上のメッセージを確認してください
+  echo   上に出ているメッセージを読んでください。
+  echo   ＊ 絵が出なかった子の場合は ComfyUI が動いているかを確認します
+  echo   ＊ 「カードの合成が使えません」と出た場合は、当日その場では直せません
+  echo      ^(results を持ち帰って開発機で作り直します^)
 )
 echo.
 pause
@@ -136,7 +177,7 @@ const batContent = (dt) => batBody(dt).split('\n').join('\r\n');
 
 const main = async () => {
   if (!fs.existsSync(resultsDir)) {
-    console.error(`results フォルダがありません: ${resultsDir}`);
+    console.error(describeMissing(resolvedResults));
     process.exit(1);
   }
   console.log(`[regen-bat] 対象   : ${resultsDir}`);

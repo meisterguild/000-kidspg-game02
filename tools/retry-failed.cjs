@@ -40,6 +40,8 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+// results の場所の判断は1箇所に集めてある（配布された ops から実物を指すため）
+const { resolveResultsDir, describeMissing } = require('./lib/resolve-results-dir.cjs');
 const DIST = path.join(ROOT, 'dist', 'main', 'main', 'services');
 
 const parseArgs = (argv) => {
@@ -384,9 +386,10 @@ const main = async () => {
   }
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf-8'));
   // テストや退避先の検証で results/ を差し替えられるようにする
-  const resultsDir = process.env.KIDSPG_RESULTS_DIR
-    ? path.resolve(process.env.KIDSPG_RESULTS_DIR)
-    : path.join(ROOT, 'results');
+  // results の場所は tools/lib/resolve-results-dir.cjs に集めてある
+  // （配布された ops から実行すると ops/results を見てしまい、当日動かなかった）
+  const resolvedResults = resolveResultsDir(ROOT);
+  const resultsDir = resolvedResults.dir;
   const resultsJson = path.join(resultsDir, 'results.json');
 
   const { resolveComfyUIConfig } = requireDist('comfyui-config.js');
@@ -400,7 +403,13 @@ const main = async () => {
   const comfy = resolveComfyUIConfig(config.comfyui);
   const outputPrefix = comfy.workflow.outputPrefix;
 
-  if (!fs.existsSync(resultsDir)) { log('results/ がありません'); return; }
+  if (!fs.existsSync(resultsDir)) {
+    // 🔴 探した場所を必ず見せる。以前はパスを出さず、しかも終了コード 0 で
+    // 終わっていたため「エラーが出ていない＝直った」と読めた
+    log(describeMissing(resolvedResults));
+    process.exitCode = 1;
+    return;
+  }
 
   // 🔴 アプリの起動時点検と同時に走ると、相手が作り直した正常なカードを
   // 退避してしまう。プロセスを越えた排他を取る（--apply のときだけ）。

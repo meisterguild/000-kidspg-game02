@@ -122,7 +122,10 @@ const findUnsatisfiedRequires = (jsSources, availablePackages) => {
  * filter と同じ判断。片方だけ直すと食い違うので、理由もここに書いておく）。
  */
 const shouldSkipCardBaseEntry = (relativePath) =>
-  relativePath.split(/[\/]/).some((seg) => seg.startsWith('superseded_'));
+  // ⚠️ 区切りは `\` と `/` の**両方**を見る。呼び出し側は path.relative の
+  // 結果（Windows では superseded_x\\foo.png）を渡すので、/ だけを見ていると
+  // 1段深い場所に置かれた瞬間に除外が外れる（敵対的レビュー 2026-09-09 の指摘）。
+  relativePath.split(/[\\\/]/).some((seg) => seg.startsWith('superseded_'));
 
 /**
  * 配布物が太る原因になる「置いてあるだけで dist に載る画像」の検出。
@@ -172,16 +175,42 @@ const FORBIDDEN_PAYLOAD_PATTERNS = [
   { pattern: /^memorial_card_/i, why: '実在の子どものカード' },
 ];
 
+/**
+ * 🔴 **名前ではなく「場所」で禁じる。**
+ *
+ * 名前のパターンだけに頼ると、想像していない名前が素通りする。実例:
+ *   ・ComfyUI が PreviewImage で書く `ComfyUI_temp_xxxxx_00001_.png`（temp/）
+ *   ・`user/comfyui.db`（開いたワークフローと入力画像名の履歴が入る）
+ *   ・拡張子違いの写真（`.jpg`）、カメラ由来の `IMG_1234.jpg`
+ * いずれも上の4パターンに1つも当たらない（敵対的レビュー 2026-09-09 の指摘）。
+ *
+ * ComfyUI のこの4フォルダは**当日PCでは空で配る**もので、中身が入っている
+ * ということは開発機で動かした痕跡がそのまま載っているということ。
+ * 名前を想像するのをやめて、**この下にファイルがあれば全部アウト**にする。
+ */
+const FORBIDDEN_LOCATIONS = [
+  { prefix: 'ai/ComfyUI/input', why: 'ComfyUI の input（撮影した顔写真が溜まる）' },
+  { prefix: 'ai/ComfyUI/output', why: 'ComfyUI の output（顔写真から作った絵）' },
+  { prefix: 'ai/ComfyUI/temp', why: 'ComfyUI の temp（プレビュー画像が溜まる）' },
+  { prefix: 'ai/ComfyUI/user', why: 'ComfyUI の user（開いた画像名の履歴が入る）' },
+];
+
 const findForbiddenFiles = (files) => {
   const hits = [];
   for (const file of files) {
-    const name = file.split(/[\\/]/).pop();
-    for (const { pattern, why } of FORBIDDEN_PAYLOAD_PATTERNS) {
-      if (pattern.test(name)) {
-        hits.push({ file, why });
-        break;
-      }
+    const normalized = file.split(/[\\/]/).join('/');
+    // 場所で禁じる（こちらが主）
+    const place = FORBIDDEN_LOCATIONS.find(
+      (l) => normalized === l.prefix || normalized.startsWith(l.prefix + '/')
+    );
+    if (place) {
+      hits.push({ file, why: place.why });
+      continue;
     }
+    // 名前で禁じる（場所の外に出てしまったものの保険）
+    const name = normalized.split('/').pop();
+    const named = FORBIDDEN_PAYLOAD_PATTERNS.find(({ pattern }) => pattern.test(name));
+    if (named) hits.push({ file, why: named.why });
   }
   return hits;
 };
@@ -189,6 +218,7 @@ const findForbiddenFiles = (files) => {
 module.exports = {
   findForbiddenFiles,
   FORBIDDEN_PAYLOAD_PATTERNS,
+  FORBIDDEN_LOCATIONS,
   buildOnsitePackageJson,
   collectRuntimeDeps,
   findUnsatisfiedRequires,

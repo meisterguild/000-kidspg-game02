@@ -75,6 +75,20 @@ echo        OK : payload があります
 rem --- パッケージがどの置き場所を前提に作られているか
 set "PKG_TARGET="
 for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "try{ (Get-Content -Raw -Encoding UTF8 '%~dp0manifest.json' | ConvertFrom-Json).target }catch{ '' }"`) do set "PKG_TARGET=%%A"
+rem 🔴 --app-only で作ったパッケージ（ai / bin / ops\node が入っていない）は
+rem 当日使えない。以前は ImageMagick と Python が [警告] になるだけで通っていた
+rem （敵対的レビュー 2026-09-09 の指摘）。manifest を見て止める。
+set "PKG_APPONLY="
+for /f "usebackq tokens=*" %%A in (`%PS% -Command "try{ if((Get-Content -Raw -Encoding UTF8 '%~dp0manifest.json' | ConvertFrom-Json).appOnly){'1'} }catch{ '' }"`) do set "PKG_APPONLY=%%A"
+if "!PKG_APPONLY!"=="1" (
+  echo        [中止] このパッケージは --app-only で作られています（反復用）。
+  echo               ComfyUI・モデル・ImageMagick・Node が入っていないため
+  echo               当日は使えません。開発機で作り直してください:
+  echo                 node tools\make-onsite-package.cjs --out ^<出力先^>
+  set "STOP=1"
+  goto :summary
+)
+
 if defined PKG_TARGET (
   echo        このパッケージの前提 : !PKG_TARGET!
   if /i not "!PKG_TARGET!"=="%TARGET%" (
@@ -209,10 +223,21 @@ rem ------------------------------------------------------------
 echo [5/6] 検証
 set "MAGICK=%TARGET%\bin\ImageMagick\magick.exe"
 if exist "!MAGICK!" (
-  for /f "tokens=*" %%V in ('"!MAGICK!" -version 2^>nul ^| findstr /i "ImageMagick"') do (
+  rem ⚠️ 引用符を4個（"!MAGICK!" と "ImageMagick"）にすると cmd の引用符処理で
+  rem for /f が**必ず空**になる（実測）。findstr を挟まず、1行目だけを取る。
+  rem さらに「exe はあるが起動できない」（SAC・VC++ 不足）を通さないよう、
+  rem 版数が取れなかったら警告にする（敵対的レビュー 2026-09-09 の指摘）。
+  for /f "usebackq tokens=*" %%V in (`"!MAGICK!" -version 2^>nul`) do (
     if not defined MAGICK_VER set "MAGICK_VER=%%V"
   )
-  echo        OK : ImageMagick  !MAGICK_VER!
+  if defined MAGICK_VER (
+    echo        OK : ImageMagick  !MAGICK_VER!
+  ) else (
+    echo        [警告] magick.exe はありますが起動できません : !MAGICK!
+    echo               記念カードが1枚も作られません。
+    echo               VC++ ランタイム、または Smart App Control のブロックを疑ってください。
+    set /a WARN+=1
+  )
 ) else (
   echo        [警告] ImageMagick がありません : !MAGICK!
   echo               記念カードが1枚も作られません。

@@ -243,6 +243,37 @@ if (APP_ONLY) {
       }
     }
   }
+  // 🔴 **顔写真の検査は「コピーする前」にやる。**
+  // 以前は組み立て終わってから見ていたので、検出した時点で顔写真は
+  // **すでに USB 上に物理的に存在**していた（6.4GB 書き終えたあと）。
+  // しかも止まるだけで消さないので、作り直しても /MIR で書き戻る
+  // （敵対的レビュー 2026-09-09 の指摘）。資材の側で先に見て止める。
+  const materialFiles = [];
+  const listMaterialFiles = (dir, prefix) => {
+    if (!fs.existsSync(dir)) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      const rel = prefix + '/' + e.name;
+      if (e.isDirectory()) listMaterialFiles(p, rel);
+      else if (e.isFile()) materialFiles.push(rel);
+    }
+  };
+  // 見るのは ComfyUI の下だけでよい（モデルと python_embeded に写真は入らない）
+  listMaterialFiles(path.join(MATERIALS, 'ai/ComfyUI'), 'ai/ComfyUI');
+  const materialForbidden = findForbiddenFiles(materialFiles);
+  for (const f of materialForbidden.slice(0, 10)) {
+    problems.push({
+      m: manifestDef.materials.find((x) => x.key === 'comfyui'),
+      reason: '持ち出してはいけないものがあります: ' + f.file + '（' + f.why + '）',
+    });
+  }
+  if (materialForbidden.length > 10) {
+    problems.push({
+      m: manifestDef.materials.find((x) => x.key === 'comfyui'),
+      reason: 'ほか ' + (materialForbidden.length - 10) + ' 件',
+    });
+  }
+
   if (problems.length > 0) {
     console.error('\n✗ 資材が揃っていないので作りません（穴あきパッケージを配らないため）:\n');
     for (const item of problems) {
