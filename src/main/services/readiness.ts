@@ -60,7 +60,9 @@ export interface ReadinessReport extends RendererReadiness {
    * 「準備完了と言われたのにカードが0枚」に当日まで気づけない。
    */
   memorialCard: {
-    /** config の memorialCard.enabled が真で、サービスを組めたか */
+    /** config の memorialCard.enabled。false は**意図して切った構成** */
+    enabled: boolean;
+    /** サービスを組めたか */
     ready: boolean;
     /** 実際に使う magick の場所。'magick' なら PATH 任せ */
     magickCommand: string;
@@ -166,7 +168,18 @@ export const classifyReadiness = (
         'カードも1枚も作られません（JSON の壊れ・コピー漏れを確認してください）'
     );
   }
-  if (!report.memorialCard.ready) {
+  if (!report.memorialCard.enabled) {
+    // 🔴 これは**意図してそうする退避策**（ImageMagick が用意できない機体で
+    // カードを切る、など）。config.json の "_comment_enabled" が
+    // 「記念カード生成機能の有効/無効」と明記している正式なスイッチなので、
+    // 異常として扱うと**当然の退避を採った瞬間に開場が止まる**
+    // （comfyui を外した構成は notes 止まりにしてあるのに、
+    // こちらだけ配慮が無かった。敵対的レビュー 2026-09-09 の指摘）。
+    notes.push(
+      '記念カードを作らない設定になっています（memorialCard.enabled = false）。' +
+        '意図した構成なら問題ありません'
+    );
+  } else if (!report.memorialCard.ready) {
     blockers.push(
       '記念カードの設定がありません（config.json の memorialCard）。' +
         'カードが1枚も作られません'

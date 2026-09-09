@@ -10,7 +10,11 @@ const TopPage: React.FC = () => {
 
   // トップページアセットのプリロード
   useEffect(() => {
-    preloadSpecificAssets(TOP_PAGE_ASSETS);
+    // 🔴 未 catch にしない。get-asset-absolute-path は見つからないと
+    //    throw するので、素材が欠けていると unhandled rejection になる
+    void preloadSpecificAssets(TOP_PAGE_ASSETS).catch((error) => {
+      console.error('TOP 画面の素材の先読みに失敗しました:', error);
+    });
   }, []);
 
   // TOP 表示時のウェルカム音（newtype）は鳴らさない。

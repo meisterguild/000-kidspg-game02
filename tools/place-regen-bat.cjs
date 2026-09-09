@@ -149,25 +149,31 @@ if not defined TOOLDIR (
 echo   使う node : %NODEEXE%
 echo.
 
-rem 🔴 **ComfyUI が動いているかを先に見る。** 動いていないと、CPU で数分
-rem    待たされた末に「[失敗] 終了コード N」で終わる。当日その場で1枚
-rem    作り直したい場面で数分を失うのがいちばん困る
-rem    （敵対的レビュー 2026-09-09 の指摘）。待受の確認は1行で書ける。
-netstat -ano -p tcp | findstr /r /c:"127.0.0.1:8188 .*LISTENING" > nul 2>&1
+rem ComfyUI が動いているかを先に見る。動いていないと、CPU で数分待たされた
+rem 末に「[失敗] 終了コード N」で終わる（当日その場で1枚作り直したい場面で
+rem 数分を失うのがいちばん困る）。
+rem
+rem 🔴 **ただし止めない。** retry-failed は3種類の救済を持っており、
+rem    ComfyUI が要るのは A（AI画像の作り直し）だけ。
+rem    B（カードの再合成＝ImageMagick のみ）と C（参照の張り直し＝I/O のみ）は
+rem    ComfyUI が止まっていても通る。ここで中止すると**それらまで止まる**
+rem    （敵対的レビュー 2026-09-09 の指摘）。
+rem 🔴 **8188 を決め打ちしない。** activeProfile が server の構成では
+rem    別の機体を指しているので、動いていても必ず「中止」になっていた。
+rem    見るのは注意喚起にとどめ、判断は retry-failed に任せる。
+netstat -ano -p tcp | findstr /r /c:":8188 .*LISTENING" > nul 2>&1
 if errorlevel 1 (
-  echo   [中止] ComfyUI が動いていません（8188 番が待受していません）。
-  echo.
-  echo          先に ComfyUI を起こしてください:
-  echo            ・ふつうは app\start-kidspg.bat が一緒に起こします
-  echo            ・単体で起こすなら ai\ComfyUI\start-comfyui.bat
+  echo   [注意] このPCの 8188 番は待受していません。
+  echo          AI画像の作り直しには ComfyUI が必要です:
+  echo            ・ふつうは app\\start-kidspg.bat が一緒に起こします
+  echo            ・単体で起こすなら ai\\ComfyUI\\start-comfyui.bat
   echo          起動には数分かかります（モデルの読み込み）。
+  echo          ＊ カードの合成やり直しだけなら、このままでも進みます。
   echo.
-  pause
-  endlocal
-  exit /b 1
+) else (
+  echo   OK : 8188 番は待受しています
+  echo.
 )
-echo   OK : ComfyUI は待受しています（8188 番）
-echo.
 "%NODEEXE%" "%TOOLDIR%\\retry-failed.cjs" --apply --only ${dt}
 set "RC=%errorlevel%"
 echo.

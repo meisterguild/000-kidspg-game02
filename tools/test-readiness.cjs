@@ -49,7 +49,12 @@ const healthy = (overrides = {}) => ({
   comfyui: { profile: 'local', baseUrl: 'http://127.0.0.1:8188', healthy: true },
   results: { dir: 'C:\\kidspg\\app\\results', writable: true },
   configLoaded: true,
-  memorialCard: { ready: true, magickCommand: 'C:\\kidspg\\bin\\ImageMagick\\magick.exe', magickUsable: true },
+  memorialCard: {
+    enabled: true,
+    ready: true,
+    magickCommand: 'C:\\kidspg\\bin\\ImageMagick\\magick.exe',
+    magickUsable: true,
+  },
   ...overrides,
 });
 
@@ -134,7 +139,7 @@ test('config が読めないとき、ComfyUI の注意書きが「問題あり�
 
 test('記念カードの設定が無いのは「遊べない」（カードが1枚も作られない）', () => {
   const r = classifyReadiness(
-    healthy({ memorialCard: { ready: false, magickCommand: 'magick', magickUsable: true } })
+    healthy({ memorialCard: { enabled: true, ready: false, magickCommand: 'magick', magickUsable: true } })
   );
   assert.ok(r.blockers.length >= 1);
   assert.match(r.blockers.join('\n'), /memorialCard/);
@@ -142,7 +147,7 @@ test('記念カードの設定が無いのは「遊べない」（カードが1�
 
 test('ImageMagick を起動できないのは「遊べない」（results に書けないのと同じ結果）', () => {
   const r = classifyReadiness(
-    healthy({ memorialCard: { ready: true, magickCommand: 'magick', magickUsable: false } })
+    healthy({ memorialCard: { enabled: true, ready: true, magickCommand: 'magick', magickUsable: false } })
   );
   assert.ok(r.blockers.length >= 1, 'カードが0枚になるのに開場を止めていません');
   assert.match(r.blockers.join('\n'), /ImageMagick/);
@@ -416,6 +421,37 @@ test('生成する start-comfyui.bat は Python のキャッシュもフォル�
 // 実機で1回確かめただけでは戻ってしまうので、ここで固定する。
 // ================================================================
 
+test('cmd の括弧ブロックの中にラベルを置いていない（ブロック全体が構文エラーになる）', () => {
+  // 🔴 実測で踏んだ: "( ... )" の中にラベルがあると cmd はブロック全体を
+  //    構文エラーにする（") was unexpected at this time." / 終了コード 255）。
+  //    0_setup.bat のまとめでこれをやってしまい、**まとめ・警告・pause が
+  //    1行も出ず窓が即閉じる**状態になった（敵対的レビュー 2026-09-09 の指摘）。
+  //    ラベルと goto を足すときは括弧をやめること。
+  for (const rel of [
+    'start-kidspg.bat',
+    'stop-kidspg.bat',
+    'tools/onsite/0_setup.bat',
+    'tools/onsite/warmup.bat',
+  ]) {
+    const bat = fs.readFileSync(path.join(ROOT, rel), 'utf-8');
+    let depth = 0;
+    let lineNo = 0;
+    for (const line of bat.split('\r\n')) {
+      lineNo += 1;
+      const trimmed = line.trim();
+      if (trimmed.startsWith('rem ') || trimmed.startsWith('::')) continue;
+      if (depth > 0 && /^:[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+        assert.fail(rel + ':' + lineNo + ' 括弧ブロックの中にラベルがあります: ' + trimmed);
+      }
+      // 文字列の中の括弧は数えない（echo の ^( はエスケープ済み）
+      const bare = line.replace(/\^./g, '');
+      depth += (bare.match(/\(/g) || []).length;
+      depth -= (bare.match(/\)/g) || []).length;
+      if (depth < 0) depth = 0;
+    }
+  }
+});
+
 test('起動バッチは ComfyUI をローカルで起こすかを baseUrl と root で決める（プロファイル名で決めない）', () => {
   const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
   // 🔴 手順書の退避策は activeProfile を local_light にすること。
@@ -529,7 +565,13 @@ test('暖機はブロックされたファイル名を表示する', () => {
   // 以前は COUNT/OTHER/UNKNOWN の3行だけ拾い、一覧行を黙って捨てていた
   assert.match(bat, /:sac_line/, '一覧行を振り分けるサブルーチンがありません');
   assert.match(bat, /ブロックされたファイル/, '一覧の見出しがありません');
-  // サブルーチンは exit /b 0 の後ろに置く（前だと通り抜けて勝手に走る）
-  const exitIndex = bat.indexOf('exit /b 0\r\n\r\nrem');
-  assert.ok(bat.indexOf(':sac_line\r\n') > bat.lastIndexOf('pause'), ':sac_line が pause より前にあります');
+  // 🔴 サブルーチンは exit /b 0 の**後ろ**に置く（前だと通常の流れが
+  //    通り抜けて勝手に走る）。以前はその位置を計算した変数を
+  //    **一度も使っていなかった**ため、この性質は検査されていなかった
+  //    （tools は lint の対象外なので未使用変数でも落ちない。
+  //    敵対的レビュー 2026-09-09 の指摘）。
+  const labelAt = bat.indexOf('\r\n:sac_line\r\n');
+  assert.ok(labelAt > 0, ':sac_line のラベルが見つかりません');
+  const exitAt = bat.lastIndexOf('exit /b 0', labelAt);
+  assert.ok(exitAt > 0 && exitAt < labelAt, ':sac_line が exit /b 0 より前にあります（勝手に走ります）');
 });

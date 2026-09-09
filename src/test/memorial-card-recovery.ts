@@ -51,6 +51,8 @@ const findUpContaining = (start: string, marker: string): string | null => {
 };
 
 export interface RecoveryRoots {
+  /** config.json が本当に見つかったか。false のときは推測値 */
+  found: boolean;
   /** config.json のあるフォルダ */
   toolRoot: string;
   /** config.json の絶対パス */
@@ -65,12 +67,20 @@ export const resolveRecoveryRoots = (from: string = __dirname): RecoveryRoots =>
   const searched: string[] = [];
   const toolRoot = findUpContaining(from, 'config.json');
   if (!toolRoot) {
-    // 見つからないときも「探した起点」を返して、呼び出し側が言えるようにする
+    // 🔴 **段数で決めた場所を「見つかった」ように返してはいけない。**
+    //    コンパイル済みでは ../../ が dist/ を指すので、
+    //    config.json が壊れた／名前が違うという**まさに救済したい状況**で
+    //    <root>/dist/results を走査して「直すものはありません」で
+    //    正常終了していた（敵対的レビュー 2026-09-09 の指摘）。
+    //    代わりに package.json のあるフォルダを探し、それも無ければ
+    //    見つからなかったことを呼び出し側へ伝える（found: false）。
+    const pkgRoot = findUpContaining(from, 'package.json');
     return {
-      toolRoot: path.resolve(from, '../..'),
-      configPath: path.resolve(from, '../..', 'config.json'),
-      materialRoot: path.resolve(from, '../..'),
-      searched: [from + ' から上へ辿って config.json を探しました'],
+      found: false,
+      toolRoot: pkgRoot ?? path.resolve(from, '../..'),
+      configPath: path.join(pkgRoot ?? path.resolve(from, '../..'), 'config.json'),
+      materialRoot: pkgRoot ?? path.resolve(from, '../..'),
+      searched: [from + ' から上へ辿って config.json を探しましたが見つかりませんでした'],
     };
   }
   const candidates = [toolRoot, path.resolve(toolRoot, '..', 'app')];
@@ -79,7 +89,7 @@ export const resolveRecoveryRoots = (from: string = __dirname): RecoveryRoots =>
     searched.push(path.join(c, 'card_base_images'));
     if (fsSync.existsSync(path.join(c, 'card_base_images'))) { materialRoot = c; break; }
   }
-  return { toolRoot, configPath: path.join(toolRoot, 'config.json'), materialRoot, searched };
+  return { found: true, toolRoot, configPath: path.join(toolRoot, 'config.json'), materialRoot, searched };
 };
 
 /** 正規版カードのファイル名。`.partial`（合成中）はここに合致しない */
@@ -665,13 +675,28 @@ export const checkCompose = async (): Promise<{ ok: boolean; lines: string[] }> 
   }
 
   // 🔴 magick は**起動できるか**まで見る。「ファイルがある」では足りない
-  //    （携帯版の PATH が届いていない / VC++ が無い / SAC に止められた、が全部ここに出る）
-  const probe = spawnSync('magick', ['-version'], { encoding: 'utf8', shell: false, timeout: 30_000 });
+  //    （携帯版の PATH が届いていない / VC++ が無い / SAC に止められた、が全部ここに出る）。
+  //
+  // 🔴 **素の 'magick' を叩いてはいけない。** 合成に使うのは service が
+  //    resolveMagickCommand で決めた場所（当日PCでは
+  //    <app>\..\bin\ImageMagick\magick.exe）。別に PATH を叩くと、
+  //    **合成は実際に通るのに点検だけが「起動できません」と言い、
+  //    retry-failed が救済を止める**（敵対的レビュー 2026-09-09 の指摘）。
+  const magickCommand = service.getMagickCommand();
+  const probe = spawnSync(magickCommand, ['-version'], {
+    encoding: 'utf8',
+    shell: false,
+    timeout: 30_000,
+  });
   if (probe.error || probe.status !== 0) {
-    lines.push(`NG : magick を起動できません（${probe.error ? probe.error.message : 'exit ' + probe.status}）`);
-    lines.push('     PATH に ImageMagick が入っているか、当日PCなら bin\\ImageMagick を確認してください');
+    lines.push(
+      `NG : magick を起動できません（${magickCommand} / ` +
+        `${probe.error ? probe.error.message : 'exit ' + probe.status}）`
+    );
+    lines.push('     当日PCでは bin\\ImageMagick\\magick.exe を使います。そこにあるか確認してください');
     return { ok: false, lines };
   }
+  lines.push(`OK : magick の場所 : ${magickCommand}`);
   lines.push(`OK : ${(probe.stdout || '').split(/\r?\n/)[0]}`);
   return { ok: true, lines };
 };
@@ -740,7 +765,19 @@ Mark Files:
   // ずれる。テストが本物の results/ を書き換える事故にも直結する。
   const resultsDir = process.env.KIDSPG_RESULTS_DIR
     ? path.resolve(process.env.KIDSPG_RESULTS_DIR)
-    : path.join(resolveRecoveryRoots().materialRoot, 'results');
+    : (() => {
+        const roots = resolveRecoveryRoots();
+        if (!roots.found) {
+          // 場所が分からないまま走ると「直すものはありません」で静かに終わる
+          console.error(
+            '\n❌ config.json が見つかりません。' +
+              '\n   ' + roots.searched.join('\n   ') +
+              '\n   KIDSPG_RESULTS_DIR で results の場所を明示して実行してください。'
+          );
+          process.exit(1);
+        }
+        return path.join(roots.materialRoot, 'results');
+      })();
   
   const recovery = new MemorialCardRecovery(resultsDir);
   await recovery.run({ dryRun, reset, forceAll, only });

@@ -47,6 +47,16 @@ export interface AssetRoots {
 }
 
 export const locateAsset = (relativePath: string, roots: AssetRoots): AssetLocation => {
+  // 🔴 **レンダラ由来の文字列をそのまま path.resolve に入れない。**
+  // 兄弟の get-image-data-url は path.relative で results の外を拒否しているのに、
+  // こちらは素通りだった。実測（2026-09-09）:
+  //   locateAsset('assets/../../../../../../Windows/win.ini') → C:\Windows\win.ini
+  // 返った絶対パスはそのまま img.src になるので、素材以外を読ませられる
+  // （敵対的レビュー 2026-09-09 の指摘）。素材名は英数と一部記号だけに絞る。
+  if (/[\\/]|\.\./.test(relativePath.replace(/^assets\/(sounds|images)\//, ''))) {
+    return { path: null, searched: ['拒否しました（素材名にパス区切りが含まれています）: ' + relativePath] };
+  }
+
   // "assets/sounds/bell.mp3" → "bell.mp3"
   const fileName = relativePath.replace(/^assets\/(sounds|images)\//, '').replace(/^assets\//, '');
 

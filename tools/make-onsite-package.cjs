@@ -42,6 +42,7 @@ const {
   shouldSkipCardBaseEntry,
   findStrayRendererImages,
   REPO_SOURCE_DIRS_TO_SCAN,
+  buildStartComfyUIBat,
 } = require('./onsite-package-lib.cjs');
 
 const ROOT = path.resolve(__dirname, '..');

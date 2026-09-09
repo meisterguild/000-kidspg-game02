@@ -43,6 +43,16 @@ export class NodeMemorialCardService {
   }
 
   /**
+   * いま使う magick の場所。--check-compose の点検に使う。
+   * 🔴 素の 'magick' を別に叩いてはいけない——当日PCの magick は PATH に
+   * 入っていない携帯版なので、**合成は通るのに点検だけが落ちる**
+   * （敵対的レビュー 2026-09-09 の指摘）。
+   */
+  getMagickCommand(): string {
+    return this.commandExecutor.getMagickCommand();
+  }
+
+  /**
    * 合成の設定（土台画像・フォントの場所）を外から見る。
    * 救済ツールの --check-compose が「今この環境で合成できるか」を
    * 確かめるために使う。private を型で抜くと壊れやすいので入口を用意する。

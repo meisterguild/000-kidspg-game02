@@ -632,9 +632,14 @@ test('生成される start-comfyui.bat の上げ直しには上限がある', (
   const bat = buildStartComfyUIBat();
   // 8188 番が埋まっていると python は即死するので、上限が無いと
   // 5秒ごとに torch を読み込み直して CPU とディスクを食い続ける
-  assert.match(bat, /TRYMAX/, '上げ直しの上限がありません');
+  // 🔴 **語の存在だけを見ない。** TRYMAX は解説コメントにも出るので、
+  //    比較や exit を削っても緑になり得た（敵対的レビュー 2026-09-09 の指摘）。
+  assert.match(bat, /set TRYMAX=\d+/, '上限の値がありません');
+  assert.match(bat, /if %TRIES% GEQ %TRYMAX% \(/, '上限との比較がありません');
+  assert.match(bat, /set \/a TRIES\+=1/, '試行回数を数えていません');
   assert.match(bat, /goto loop/, 'ループそのものが無くなっています');
   assert.match(bat, /giving up/, '諦めたことをログに残していません');
+  assert.match(bat, /exit \/b 1/, '諦めたときに終了していません（ループから抜けません）');
 });
 
 test('生成される start-comfyui.bat は CRLF（cmd が LF を解釈できない）', () => {
@@ -680,8 +685,15 @@ test('コピー前の検査はリポジトリ側の素材も見る', () => {
     assert.ok(REPO_SOURCE_DIRS_TO_SCAN.includes(dir), dir + ' を見ていません');
   }
   const src = fs.readFileSync(path.join(ROOT, 'tools', 'make-onsite-package.cjs'), 'utf-8');
-  const beforeCopy = src.slice(0, src.indexOf('コピー中 : '));
-  assert.match(beforeCopy, /REPO_SOURCE_DIRS_TO_SCAN/, 'コピー前に見ていません');
+  // 🔴 **位置で比べる。** 以前は「コピーより前」を slice で切って
+  //    match(/REPO_SOURCE_DIRS_TO_SCAN/) していたが、**冒頭の require の
+  //    分割代入に一致**するため、走査をコピーの後ろへ移しても緑だった
+  //    （敵対的レビュー 2026-09-09 の指摘）。
+  const scanAt = src.indexOf('listMaterialFiles(path.join(ROOT, relDir), relDir)');
+  const copyAt = src.indexOf("say('       コピー中 : '");
+  assert.ok(scanAt > 0, 'リポジトリ側の走査が見つかりません');
+  assert.ok(copyAt > 0, 'コピーの呼び出しが見つかりません');
+  assert.ok(scanAt < copyAt, 'リポジトリ側の走査がコピーより後ろにあります（USB に載ってから検出する）');
 });
 
 test('--no-hash は古い SHA256SUMS を残さない', () => {
@@ -695,7 +707,13 @@ test('--no-hash は古い SHA256SUMS を残さない', () => {
 test('SHA256SUMS は payload の外（prereq・手順書）も載せる', () => {
   const src = fs.readFileSync(path.join(ROOT, 'tools', 'make-onsite-package.cjs'), 'utf-8');
   const hashPart = src.slice(src.indexOf('hashWalk(payload);'));
-  assert.match(hashPart, /prereq/, 'prereq を照合対象にしていません');
+  // 🔴 **コメントに一致させない。** 以前は /prereq/ だけを見ていたので、
+  //    直後の注釈に当たって extraTargets のループを削っても緑だった
+  //    （敵対的レビュー 2026-09-09 の指摘）。実際の処理を見る。
+  assert.match(hashPart, /const extraTargets = \['prereq'\]/, 'prereq を照合対象にしていません');
+  assert.match(hashPart, /if \(fs\.existsSync\(dir\)\) hashWalk\(dir\)/, 'prereq を走査していません');
+  assert.match(hashPart, /readdirSync\(outDir/, 'ルート直下を載せていません');
+  assert.match(hashPart, /e\.name === 'SHA256SUMS'/, '目録自身を除いていません');
   // VC_redist は唯一インストール操作が要るもの。壊れていたら当日詰む
 });
 
@@ -727,9 +745,9 @@ test('セットアップはモデル4本と Electron 本体を確かめる', () 
 test('セットアップは致命的な欠落があるときに前向きな手順を出さない', () => {
   const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', '0_setup.bat'), 'utf-8');
   assert.match(bat, /MISSING_CORE/, '致命的な欠落を区別していません');
-  assert.match(bat, /:missing_core/, '欠落時の案内がありません');
+  assert.match(bat, /:sum_missing_core/, '欠落時の案内がありません');
   // 「このあとやること」より前で分岐していること
-  const idxBranch = bat.indexOf('if defined MISSING_CORE goto :missing_core');
+  const idxBranch = bat.indexOf('if defined MISSING_CORE goto :sum_missing_core');
   const idxNext = bat.indexOf('echo   このあとやること');
   assert.ok(idxBranch > 0 && idxBranch < idxNext, '分岐が手順の後ろにあります');
 });
@@ -748,7 +766,20 @@ test('資材の組み立ては検証で溜まるものを毎回空にする', ()
   // /MIR は /XD で除外したフォルダを消さないので、検証で作られた
   // user\comfyui.db と temp\ が残り、再実行でも直らなかった
   assert.match(ps1, /'input', 'output', 'temp', 'user'/, '4つを空にしていません');
-  assert.match(ps1, /Remove-Item -Recurse -Force -LiteralPath \(Join-Path \$dir '\*'\)/, '中身を消していません');
+  // 🔴 **-LiteralPath にワイルドカードを渡していないこと。** 展開されないので
+  //    1件も消えず、-ErrorAction SilentlyContinue と合わせて**無言で通る**
+  //    （実測 2026-09-09。「空にします」と表示だけして何もしていなかった）。
+  assert.ok(
+    !/-LiteralPath \(Join-Path \$dir '\*'\)/.test(ps1),
+    '-LiteralPath にワイルドカードを渡しています（1件も消えません）'
+  );
+  assert.match(
+    ps1,
+    /foreach \(\$item in @\(Get-ChildItem -Force -LiteralPath \$dir/,
+    '子を列挙して消していません'
+  );
+  assert.match(ps1, /Remove-Item -Recurse -Force -LiteralPath \$item\.FullName/, '中身を消していません');
+  assert.match(ps1, /を空にできませんでした/, '消し残りを検出していません');
 });
 
 test('顔写真の後始末は ComfyUI の input/output も対象にする', () => {
@@ -763,12 +794,25 @@ test('顔写真の後始末は ComfyUI の input/output も対象にする', () 
   fs.writeFileSync(path.join(dir, 'input', '3d', 'sample.obj'), 'x');
   fs.writeFileSync(path.join(dir, 'output', 'KidsPG_00001_.png'), 'x');
 
+  // 🔴 危険と認めた4つ（input / output / temp / user）すべてを見る。
+  //    以前は input/output の2つだけで、**自分たちが持ち出し禁止にしている
+  //    場所の半分が未処理**だった（敵対的レビュー 2026-09-09 の指摘）。
+  fs.mkdirSync(path.join(dir, 'temp'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'user'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'temp', 'ComfyUI_temp_abcde_00001_.png'), 'x');
+  fs.writeFileSync(path.join(dir, 'user', 'comfyui.db'), 'x');
+
   const groups = listScratchFiles(dir);
   const all = groups.flatMap((g) => g.files.map((f) => path.basename(f.path)));
   assert.ok(all.includes('photo_20260912_101112.png'), '顔写真を見ていません');
   assert.ok(all.includes('KidsPG_00001_.png'), '生成画像を見ていません');
+  assert.ok(all.includes('ComfyUI_temp_abcde_00001_.png'), 'temp のプレビューを見ていません');
+  assert.ok(all.includes('comfyui.db'), 'user の履歴を見ていません');
   // サブフォルダのサンプルは触らない
   assert.ok(!all.includes('sample.obj'), 'サブフォルダまで対象にしています');
+  // 掴み損ねを「空です」と言わないための印
+  const missing = listScratchFiles(path.join(dir, 'nope'));
+  assert.ok(missing.every((g) => g.missing), '見つからないことを伝えていません');
 
   // config.json から場所を解決できる
   const cfg = path.join(dir, 'config.json');

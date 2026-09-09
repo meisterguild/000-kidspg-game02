@@ -107,8 +107,12 @@ export type AssetKey =
   // SOUND_ASSETS
   | 'action' | 'bell' | 'buttonClick' | 'jump' | 'machine' 
   | 'newtype' | 'ng' | 'paltu' | 'screenChange' | 'sound7'
-  // IMAGE_ASSETS  
-  | 'titleGummy01';
+  // IMAGE_ASSETS
+  // 🔴 IMAGE_ASSET_RELATIVE_PATHS（renderer/utils/assets.ts）と揃えること。
+  //    片方だけ増やすと isAssetsLoaded() が**永久に false** になる
+  //    （allImageKeys.every が満たされない。敵対的レビュー 2026-09-09 の指摘）。
+  | 'titleGummy01'
+  | 'dummyPhoto';
 
 export const TOP_PAGE_ASSETS: AssetKey[] = [
   'buttonClick',

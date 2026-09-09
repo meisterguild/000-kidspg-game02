@@ -118,7 +118,13 @@ rem --- 空き容量（payload は 7GB 前後。余裕を見て 15GB を要求�
 rem PowerShell の1行は短く保つ。bat の中で入れ子の引用符が増えるほど、
 rem 「動くのに何も返ってこない」壊れ方をして原因が見えなくなる。
 set "TDRIVE=%TARGET:~0,1%"
+rem 🔴 **未初期化のまま比較しない。** for /f が1行も返さないと FREE_GB は
+rem    未定義になり、`if  LSS 15` が文字列比較（"" LSS "15" → 真）になって
+rem    空き容量が十分でも警告が出る。同じ穴は start-kidspg.bat 側では
+rem    塞いだのに、ここだけ揃っていなかった（敵対的レビュー 2026-09-09 の指摘）。
+set "FREE_GB=-1"
 for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "try{ [int]((Get-PSDrive %TDRIVE%).Free/1GB) }catch{ -1 }"`) do set "FREE_GB=%%A"
+if not defined FREE_GB set "FREE_GB=-1"
 if "!FREE_GB!"=="-1" (
   echo        [注意] 空き容量を確かめられませんでした
   set /a WARN+=1
@@ -192,9 +198,16 @@ if defined DRYRUN (
   if exist "%TARGET%\app\config.json" (
     fc /b "%TARGET%\app\config.json" "%~dp0payload\app\config.json" > nul 2>&1
     if errorlevel 1 (
-      set "CFG_BACKUP=%TARGET%\app\config.json.before-setup"
+      rem 🔴 退避名を固定にしない。2回目の実行で**初回の退避内容を上書き**する。
+      rem    当日の設定を守るために作った分岐が、逆に守れなくなる
+      rem    （敵対的レビュー 2026-09-09 の指摘）。
+      for /f "usebackq tokens=*" %%T in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set "CFG_STAMP=%%T"
+      if not defined CFG_STAMP set "CFG_STAMP=unknown"
+      set "CFG_BACKUP=%TARGET%\app\config.json.before-setup-!CFG_STAMP!"
+      rem 成否は copy の終了コードで見る（if exist だと、古い退避が残っていた
+      rem 場合にコピー失敗でも「退避しました」と出てしまう）
       copy /y "%TARGET%\app\config.json" "!CFG_BACKUP!" > nul 2>&1
-      if exist "!CFG_BACKUP!" (
+      if not errorlevel 1 (
         echo        ＊ 当日の config.json は書き換わっています。上書きする前に退避しました:
         echo             !CFG_BACKUP!
         echo           退避策（activeProfile を local_light 等）を続けたい場合は、
@@ -377,61 +390,74 @@ echo.
 rem ------------------------------------------------------------
 :summary
 echo ============================================================
-if defined STOP (
-  echo   セットアップを中止しました。上の [中止] を見てください。
-) else (
-  echo [6/6] まとめ
-  if "!WARN!"=="0" (
-    echo   点検 : 問題は見つかりませんでした。
-  ) else (
-    echo   点検 : 気になる点が !WARN! 件あります（上の [注意] [警告]）。
-  )
-  echo.
-  rem 🔴 **ゲームが動かない欠落があるときに「このあとやること」を出さない。**
-  rem    以前は ImageMagick / Electron / ComfyUI が全部無くても
-  rem    それぞれ [警告] を出すだけで、まとめは「気になる点が 4 件」と表示し、
-  rem    そのまま「暖機して再起動して ★★★ 準備完了 ★★★ を確かめる」という
-  rem    前向きな手順へ進んでいた（敵対的レビュー 2026-09-09 の指摘）。
-  rem    コピーが部分的に失敗した場合（ウイルス対策のブロックなど、robocopy が
-  rem    8 未満で返るケース）は中止にならないので、ここで受け止める。
-  if defined MISSING_CORE goto :missing_core
-  echo   このあとやること
-  echo     1. Windows の設定を当日向けにする（1_当日手順書.md の「人がやること」）
-  echo        ・カメラのプライバシー設定を ON
-  echo        ・スリープと画面オフを「なし」に
-  echo        ・音量とスピーカーの確認
-  echo.
-  echo     2. 🔴 **インターネットに繋いだ状態で** %TARGET%\ウォームアップ.bat を実行する
-  echo        Windows 11 の Smart App Control は、署名の無いファイルを初めて読むとき
-  echo        クラウドへ判定を問い合わせ、返るまでブロックします。ComfyUI が読む
-  echo        .pyd は全部署名がないので、当日オフラインだとこれに当たり得ます。
-  echo        前日までに一度オンラインで読ませ、判定を取り切っておきます。
-  echo        ＊ SAC をオフにする必要はありません。
-  echo        ＊ ブロックが 0 件になるまで繰り返してください（数回かかることがあります）。
-  echo.
-  echo     3. インターネットを切り、**PCを再起動**する
-  echo.
-  echo     4. %TARGET%\app\start-kidspg.bat を実行し、
-  echo        ★★★ 準備完了 ★★★ が出ることを確かめる（これが当日の形）
-  echo.
-  echo     5. 1プレイ通し、results\^<日時^>\memorial_card_*.png ができれば成功です
-  goto :summary_done
+rem 🔴 **括弧ブロックの中にラベルを置かないこと。**
+rem    cmd は "( ... )" の中にラベルがあるとブロック全体を構文エラーにする
+rem    （実測: ") was unexpected at this time." で終了コード 255）。
+rem    以前ここを if/else の括弧で書いたまま :missing_core / :summary_done を
+rem    足したため、**まとめ・警告・「このあとやること」・pause が1行も出ず、
+rem    窓が即閉じて上の [警告] すら読めなかった**（敵対的レビュー 2026-09-09 の指摘）。
+rem    このファイルの他の分岐と同じく goto で分ける。
+if defined STOP goto :sum_stopped
 
-  :missing_core
-  echo   🔴 **このままでは当日ゲームが動きません。**
-  echo      上の [警告] のうち、次のどれかが出ています:
-  echo        ・ImageMagick が無い／起動できない  … 記念カードが1枚も作られません
-  echo        ・Electron 本体が無い              … ゲームが起動しません
-  echo        ・ComfyUI 本体が無い               … AI 変換が使えません
-  echo.
-  echo      やること
-  echo        1. USB がきちんと差さっているか確認し、**もう一度このバッチを実行**する
-  echo        2. それでも直らない場合、ウイルス対策ソフトがコピーを止めていないか見る
-  echo        3. 直らなければ開発機でパッケージを作り直してください
-  echo.
-  echo      ＊ Windows の設定や暖機は、これが直ってから行ってください。
-  :summary_done
+echo [6/6] まとめ
+if "!WARN!"=="0" (
+  echo   点検 : 問題は見つかりませんでした。
+) else (
+  echo   点検 : 気になる点が !WARN! 件あります（上の [注意] [警告]）。
 )
+echo.
+
+rem 🔴 **ゲームが動かない欠落があるときに「このあとやること」を出さない。**
+rem    以前は ImageMagick / Electron / ComfyUI が全部無くても
+rem    それぞれ [警告] を出すだけで、まとめは「気になる点が 4 件」と表示し、
+rem    そのまま「暖機して再起動して ★★★ 準備完了 ★★★ を確かめる」という
+rem    前向きな手順へ進んでいた（敵対的レビュー 2026-09-09 の指摘）。
+rem    コピーが部分的に失敗した場合（ウイルス対策のブロックなど、robocopy が
+rem    8 未満で返るケース）は中止にならないので、ここで受け止める。
+if defined MISSING_CORE goto :sum_missing_core
+
+echo   このあとやること
+echo     1. Windows の設定を当日向けにする（1_当日手順書.md の「人がやること」）
+echo        ・カメラのプライバシー設定を ON
+echo        ・スリープと画面オフを「なし」に
+echo        ・音量とスピーカーの確認
+echo.
+echo     2. 🔴 **インターネットに繋いだ状態で** %TARGET%\ウォームアップ.bat を実行する
+echo        Windows 11 の Smart App Control は、署名の無いファイルを初めて読むとき
+echo        クラウドへ判定を問い合わせ、返るまでブロックします。ComfyUI が読む
+echo        .pyd は全部署名がないので、当日オフラインだとこれに当たり得ます。
+echo        前日までに一度オンラインで読ませ、判定を取り切っておきます。
+echo        ＊ SAC をオフにする必要はありません。
+echo        ＊ ブロックが 0 件になるまで繰り返してください（数回かかることがあります）。
+echo.
+echo     3. インターネットを切り、**PCを再起動**する
+echo.
+echo     4. %TARGET%\app\start-kidspg.bat を実行し、
+echo        ★★★ 準備完了 ★★★ が出ることを確かめる（これが当日の形）
+echo.
+echo     5. 1プレイ通し、results\^<日時^>\memorial_card_*.png ができれば成功です
+goto :sum_done
+
+:sum_stopped
+echo   セットアップを中止しました。上の [中止] を見てください。
+goto :sum_done
+
+:sum_missing_core
+echo   🔴 **このままでは当日ゲームが動きません。**
+echo      上の [警告] のうち、次のどれかが出ています:
+echo        ・ImageMagick が無い／起動できない  … 記念カードが1枚も作られません
+echo        ・Electron 本体が無い              … ゲームが起動しません
+echo        ・ComfyUI 本体が無い               … AI 変換が使えません
+echo.
+echo      やること
+echo        1. USB がきちんと差さっているか確認し、**もう一度このバッチを実行**する
+echo        2. それでも直らない場合、ウイルス対策ソフトがコピーを止めていないか見る
+echo        3. 直らなければ開発機でパッケージを作り直してください
+echo.
+echo      ＊ Windows の設定や暖機は、これが直ってから行ってください。
+goto :sum_done
+
+:sum_done
 echo ============================================================
 echo.
 pause

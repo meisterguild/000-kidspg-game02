@@ -93,7 +93,20 @@ foreach ($d in @('input', 'output', 'temp', 'user')) {
         $stale = @(Get-ChildItem -Recurse -Force -LiteralPath $dir -ErrorAction SilentlyContinue)
         if ($stale.Count -gt 0) {
             Say ("       前回の検証で溜まったものを空にします : {0}\  ({1} 件)" -f $d, $stale.Count)
-            Remove-Item -Recurse -Force -LiteralPath (Join-Path $dir '*') -ErrorAction SilentlyContinue
+            # 🔴 **-LiteralPath にワイルドカードを渡してはいけない。**
+            #    展開されないので ItemNotFoundException になり、
+            #    -ErrorAction SilentlyContinue と合わせて**1件も消えず無言で通る**
+            #    （実測 2026-09-09。「空にします」と表示だけして何もしていなかった）。
+            #    **直下の子だけ**を列挙して1つずつ -Recurse で消す
+            #    （名前に [ ] が入っていても安全。$stale は -Recurse なので
+            #     親を消したあとに子を消そうとして空振りする）。
+            foreach ($item in @(Get-ChildItem -Force -LiteralPath $dir -ErrorAction SilentlyContinue)) {
+                Remove-Item -Recurse -Force -LiteralPath $item.FullName -ErrorAction SilentlyContinue
+            }
+            $left = @(Get-ChildItem -Force -LiteralPath $dir -ErrorAction SilentlyContinue)
+            if ($left.Count -gt 0) {
+                Die ("{0} を空にできませんでした（{1} 件残っています）。ComfyUI が動いていないか確認してください: {2}" -f $d, $left.Count, $dir)
+            }
         }
     }
     New-Item -ItemType Directory -Force $dir | Out-Null

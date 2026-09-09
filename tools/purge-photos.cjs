@@ -76,6 +76,29 @@ const flag = (name, { pattern, example } = {}) => {
   return next;
 };
 
+/**
+ * 🔴 **未知のフラグを黙って無視してはいけない。**
+ * `--keep-comfy` のような打ち間違いが「触らないつもり」なのに
+ * **全消し**になる（敵対的レビュー 2026-09-09 の指摘）。
+ * 値つきのフラグは flag() が検証するので、ここは真偽フラグの綴りを見る。
+ */
+const KNOWN_FLAGS = new Set([
+  'apply',
+  'include-incomplete',
+  'include-unverified',
+  'keep-comfyui',
+  'only',
+]);
+for (const arg of argv) {
+  if (!arg.startsWith('--')) continue;
+  const name = arg.slice(2);
+  if (!KNOWN_FLAGS.has(name)) {
+    flagErrors.push(
+      `知らない指定です: ${arg}（使えるのは ${[...KNOWN_FLAGS].map((f) => '--' + f).join(' / ')}）`
+    );
+  }
+}
+
 const APPLY = has('apply');
 const INCLUDE_INCOMPLETE = has('include-incomplete');
 const INCLUDE_UNVERIFIED = has('include-unverified');
@@ -257,14 +280,19 @@ const main = async () => {
       console.error(`   ${t.dt} 削除に失敗: ${error.message}`);
     }
   }
-  // 取ったロックは必ず返す（残すとアプリの起動時点検が毎回飛ばされる）
-  if (releaseLock) { try { await releaseLock(); } catch { /* 解放できなくても続ける */ } }
   console.log(`[purge] 完了: ${done} 件 / ${human(freed)} を解放しました`);
   if (done < targets.length) {
     console.log(`[purge] ⚠️ ${targets.length - done} 件は消せませんでした（上のエラーを確認してください）`);
   }
 
+  // 🔴 **ロックを返す前に ComfyUI 側も片付ける。** 解放してから消すと、
+  // 枠の合間に叩いたときに生成中の子の input や、まだ /view で取っていない
+  // output を消せてしまう（その子のカードはプレースホルダに倒れる。
+  // 敵対的レビュー 2026-09-09 の指摘）。
   await purgeComfyUIScratch();
+
+  // 取ったロックは必ず返す（残すとアプリの起動時点検が毎回飛ばされる）
+  if (releaseLock) { try { await releaseLock(); } catch { /* 解放できなくても続ける */ } }
 };
 
 /**
@@ -274,6 +302,28 @@ const main = async () => {
  */
 const purgeComfyUIScratch = async () => {
   console.log('');
+
+  // 🔴 **別のツリーを指されたら、このPCの ComfyUI は触らない。**
+  // ComfyUI の場所はリポジトリの config.json から解決するので、
+  // `KIDSPG_RESULTS_DIR` で別の results（後日の作業用コピー、テストの
+  // 一時フォルダ）を指されたときにここを消すと、**関係のない
+  // 開発機の資材を消す**ことになる。
+  // 実際に `tools/test-purge-photos.cjs` が `--apply` を10回近く走らせるため、
+  // `npm test`／`npm run check`／パッケージ作成のたびに
+  // 開発機の ComfyUI の input/output が消えていた（2026-09-09 に実害を確認:
+  // input 43件・output 51件が消えた。results 側の原本は無事だった）。
+  // 「自分で解決した results」＝同じ置き場のものだけを後始末の対象にする。
+  if (process.env.KIDSPG_RESULTS_DIR) {
+    console.log('[purge] ComfyUI の input/output は触りません（KIDSPG_RESULTS_DIR で別のツリーを指しているため）');
+    console.log('        このPCの ComfyUI を片付けるなら、環境変数を外して実行してください');
+    return;
+  }
+  // `--only` は「その回だけ」の指定。ComfyUI の作業用の置き場は回ごとに
+  // 分かれていないので、一括で消すとほかの回の作り直しに影響する
+  if (ONLY) {
+    console.log('[purge] ComfyUI の input/output は触りません（--only は回ごとの指定のため）');
+    return;
+  }
   if (KEEP_COMFYUI) {
     console.log('[purge] ComfyUI の input/output は --keep-comfyui が指定されたので触りません');
     console.log('        🔴 生の顔写真が残ります。持ち帰る前に必ず消してください');
@@ -291,18 +341,35 @@ const purgeComfyUIScratch = async () => {
     for (const c of candidates) console.log('        ' + c);
     return;
   }
-  const { root, from } = resolveComfyUIRoot(configPath);
+  const resolved = resolveComfyUIRoot(configPath);
+  const { root, from } = resolved;
   if (!root) {
     console.log(`[purge] ComfyUI の場所が分かりません（${from}）。input/output は触りません`);
     console.log('        🔴 AI 変換を使っていた場合、生の顔写真が残っている可能性があります');
     return;
   }
 
-  const groups = listScratchFiles(root);
+  // paths.input / paths.output の個別指定にも従う（comfyui-scratch.cjs の注釈）
+  const groups = listScratchFiles(root, { input: resolved.input, output: resolved.output });
   const all = groups.flatMap((g) => g.files);
   console.log(`[purge] ComfyUI の作業用の置き場 : ${root}  (${from})`);
   for (const g of groups) {
-    console.log(`        ${path.basename(g.dir)}\\ : ${g.files.length} 件 / ${human(g.files.reduce((a, f) => a + f.size, 0))}`);
+    const note = g.symlink
+      ? ' … リンクなので触りません'
+      : g.missing
+        ? ' … フォルダがありません'
+        : '';
+    console.log(
+      `        ${g.name}\\ : ${g.files.length} 件 / ` +
+        `${human(g.files.reduce((a, f) => a + f.size, 0))}${note}`
+    );
+  }
+  // 🔴 **「掴み損ねた」を「空です」と言わない。** 場所を間違えたときに
+  // 片付いたと読めるのがいちばん危ない（敵対的レビュー 2026-09-09 の指摘）。
+  if (groups.every((g) => g.missing)) {
+    console.log('        🔴 4つのフォルダがどれも見つかりません。場所が違う可能性があります');
+    console.log('           生の顔写真が残っているかもしれないので、手で確認してください');
+    return;
   }
   if (all.length === 0) {
     console.log('        すでに空です');

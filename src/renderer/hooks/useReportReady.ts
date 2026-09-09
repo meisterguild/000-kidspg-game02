@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useCamera } from '../contexts/CameraContext';
 import { useConfig } from '../contexts/ConfigContext';
 import { useScreen } from '../contexts/ScreenContext';
-import { didBackgroundPreloadFail } from '../utils/assets';
+import { didBackgroundPreloadFail, retryBackgroundPreload } from '../utils/assets';
+import { ALL_BACKGROUND_ASSETS } from '@shared/utils/constants';
 
 /**
  * 「画面が出て、遊べる状態になった」ことを main へ1回だけ報告する。
@@ -74,7 +75,14 @@ export const useReportReady = (): void => {
     window.electronAPI.onRequestReadyReport(() => {
       reported.current = false;
       reportedCameraReady.current = null;
-      setReportNonce((n) => n + 1);
+      // 🔴 先読みの失敗も**読み直してから**測り直す。以前は記録が
+      // モジュール大域で消す手段が無く、一度立った「素材が読めていません」の
+      // blocker が**バッチを叩き直しても戻らなかった**（レンダラを再読込するか
+      // アプリを再起動するまで固定。敵対的レビュー 2026-09-09 の指摘）。
+      // 読めているものは飛ばされるので、失敗した分だけが再試行される。
+      void retryBackgroundPreload(ALL_BACKGROUND_ASSETS).finally(() => {
+        setReportNonce((n) => n + 1);
+      });
     });
     return () => window.electronAPI?.removeRequestReadyReportListener?.();
   }, []);

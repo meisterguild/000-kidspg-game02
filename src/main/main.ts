@@ -76,6 +76,18 @@ class ElectronApp {
    */
   private magickCommand = 'magick';
   private magickUsable = false;
+  /**
+   * ImageMagick の点検が終わるまでの約束。
+   *
+   * 🔴 **点検が終わる前に `magickUsable` を読んではいけない。**
+   * 初期値は false で、点検（`-version` の起動）は冷えた初回起動では
+   * 数秒かかる。一方 `app-ready` は ipcMain のハンドラなので初期化の
+   * await 連鎖の途中でも処理されるため、レンダラが早く決着すると
+   * **「ImageMagick を起動できません」の誤った blocker が立ち、
+   * しかもそれを言い直す経路が無い**（言い直すのはカメラだけ）
+   * （敵対的レビュー 2026-09-09 の指摘）。app-ready はこれを待つ。
+   */
+  private magickChecked: Promise<void> | null = null;
   private resultsManager: ResultsManager | null = null;
   private rankingService: RankingService | null = null; // ADDED
   private memorialCardGenerationFlags = new Map<string, 'dummy_inprogress' | 'dummy_completed' | 'ai_inprogress' | 'ai_completed'>(); // 生成状態管理フラグ
@@ -373,7 +385,9 @@ class ElectronApp {
       this.setupIPC();
       await this.createMainWindow();
       await this.initializeServices();
-      await this.checkImageMagick();
+      // 点検の約束を先に持っておく（app-ready がこれを待つ）
+      this.magickChecked = this.checkImageMagick();
+      await this.magickChecked;
       await this.checkComfyUI();
 
       // 前回の異常終了で残った不整合（合成中の残骸・壊れたカード・
@@ -851,6 +865,10 @@ class ElectronApp {
     ipcMain.handle('app-ready', async (event, info: unknown) => {
       try {
         const renderer = info as RendererReadiness;
+        // ImageMagick の点検が終わるのを待つ（未点検の false を読まない）
+        if (this.magickChecked) {
+          await this.magickChecked.catch(() => undefined);
+        }
         const resultsDir = resolveResultsDir();
         const base: Omit<ReadinessReport, 'blockers' | 'notes'> = {
           assetsLoaded: !!renderer?.assetsLoaded,
@@ -878,9 +896,12 @@ class ElectronApp {
               }
             : null,
           results: { dir: resultsDir, writable: await checkResultsWritable(resultsDir) },
+          // 点検が終わるまで待つ（終わっていない値を読むと誤った blocker になる）
           // 🔴 config が読めたか。読めないと画面は TOP まで出るのに遊べない
           configLoaded: !!this.config,
           memorialCard: {
+            // enabled: false は**意図して切った構成**（readiness.ts の注釈）
+            enabled: this.config?.memorialCard?.enabled ?? false,
             ready: !!this.memorialCardService,
             magickCommand: this.magickCommand,
             magickUsable: this.magickUsable,
@@ -1502,7 +1523,14 @@ class ElectronApp {
     window.webContents.on('render-process-gone', (_event, details) => {
       console.error('[画面] レンダラが落ちました:', details.reason, details.exitCode);
       void clearReadiness(this.getBundleRoot());
-      if (!reloadedOnce && details.reason !== 'clean-exit') {
+      // 🔴 'clean-exit' はクラッシュではない（画面を閉じた等）。
+      //    それに対して「落ちました＋バッチをやり直せ」を出すのは誤り。
+      //    印を消すのは正しいので、そこまでで止める。
+      if (details.reason === 'clean-exit') {
+        console.log('[画面] レンダラが正常終了しました（clean-exit）');
+        return;
+      }
+      if (!reloadedOnce) {
         reloadedOnce = true;
         console.error('[画面] 1回だけ読み直します');
         try {
@@ -1518,15 +1546,36 @@ class ElectronApp {
           'いったんアプリを終了し、start-kidspg.bat をもう一度実行してください。'
       );
     });
+    // 🔴 **応答不能は一過性のこともある。** 重い処理で数秒詰まっただけで
+    //    印を消すと、**遊べているのに「準備できていません」**になり、
+    //    しかも書き直す経路が無い（reported.current は立ったまま）。
+    //    印を消すのは正しいが、戻ってきたら測り直させる。
     window.webContents.on('unresponsive', () => {
-      console.error('[画面] レンダラが応答しません');
+      console.error('[画面] レンダラが応答しません（印を消して、戻ったら測り直します）');
       void clearReadiness(this.getBundleRoot());
+      this.notifyStaff(
+        'renderer-unresponsive',
+        'ゲーム画面が一時的に応答しなくなりました。操作できない場合はアプリを再起動してください。'
+      );
+    });
+    window.webContents.on('responsive', () => {
+      console.log('[画面] レンダラが応答を再開しました。準備状況を測り直します');
+      if (!window.isDestroyed()) {
+        window.webContents.send('request-ready-report');
+      }
     });
   }
 
   private async initializeMemorialCardService(): Promise<void> {
     try {
-      if (!this.config?.memorialCard) {
+      if (!this.config) {
+        // 🔴 真因は config.json 自体。「memorialCard がありません」と言うと
+        //    設定の一節を疑わせて遠回りさせる（readiness の blocker が
+        //    正しい原因を出すので、ここでは重ねて言わない）
+        console.error('[記念カード] config.json が読めていないので初期化しません');
+        return;
+      }
+      if (!this.config.memorialCard) {
         // 🔴 **黙って return してはいけない。** ここを通ると save-json の
         //    カード生成ブロックが丸ごと飛び、プレイは成立してランキングにも
         //    出るのに**全員のカードが存在しない**状態になる。

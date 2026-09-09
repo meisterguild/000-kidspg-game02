@@ -1,4 +1,3 @@
-import { TIMING_CONFIG } from '@shared/utils/constants';
 import type { AssetKey } from '@shared/utils/constants';
 
 /** 読み込み済みのアセット。このファイルの外へは出さない（入口は下の関数だけ） */
@@ -7,6 +6,17 @@ interface AssetManager {
   images: Record<string, HTMLImageElement>;
   isLoaded: boolean;
 }
+
+/**
+ * 先読み1件の待ち時間。
+ *
+ * 🔴 **ComfyUI のタイムアウト（TIMING_CONFIG.comfyuiTimeout）を流用しない。**
+ * 以前は画像側がそれを使っていたため、ComfyUI の設定を縮めると
+ * **開場の判定が連動して壊れる**関係になっていた（敵対的レビュー 2026-09-09 の指摘）。
+ * TOP のタイトル画像は約1.9MB あり、冷えたコピー直後の当日PCでは
+ * Defender / SAC の初回スキャンと競合して数秒かかる。余裕を持たせる。
+ */
+const ASSET_LOAD_TIMEOUT_MS = 20000;
 
 /** 音声アセットの読み込み先。使うのはこのファイルの preloadSpecificAssets だけ */
 const getSoundAssetPath = async (key: keyof typeof SOUND_ASSET_RELATIVE_PATHS): Promise<string> => {
@@ -111,12 +121,15 @@ export const preloadSpecificAssets = async (assetKeys: AssetKey[]): Promise<void
 
       const promise = new Promise<void>((resolve) => {
         const timeoutId = setTimeout(() => {
-          console.warn(`[Specific] 音声ファイルの読み込みがタイムアウトしました: ${path}`);
-          // 🔴 **黙って通さない。** resolve() で先へ進むのは正しい（ゲームは動く）が、
-          //    失敗した事実は準備確認へ伝える（下の markBackgroundPreloadFailed の注釈）
-          markBackgroundPreloadFailed();
+          // ⚠️ **打ち切りは「読めなかった」と断じないこと。**
+          //    冷えたコピー直後の当日PCでは Defender / SAC の初回スキャンが挟まり、
+          //    12本の先読み（各IPC往復つき）と競合して待ち時間を超えることがある。
+          //    ここを blocker に数えると**遊べるのに開場が止まる**
+          //    （敵対的レビュー 2026-09-09 の指摘）。数えるのは
+          //    「ファイルが見つからない・壊れている」＝ onerror のときだけ。
+          console.warn(`[Specific] 音声ファイルの読み込みがタイムアウトしました（先へ進みます）: ${path}`);
           resolve();
-        }, 10000);
+        }, ASSET_LOAD_TIMEOUT_MS);
 
         const onCanPlay = () => {
           clearTimeout(timeoutId);
@@ -152,10 +165,10 @@ export const preloadSpecificAssets = async (assetKeys: AssetKey[]): Promise<void
 
       const promise = new Promise<void>((resolve) => {
          const timeoutId = setTimeout(() => {
-          console.warn(`[Specific] 画像ファイルの読み込みがタイムアウトしました: ${path}`);
-          markBackgroundPreloadFailed();
+          // 打ち切りは blocker に数えない（上の音声側と同じ理由）
+          console.warn(`[Specific] 画像ファイルの読み込みがタイムアウトしました（先へ進みます）: ${path}`);
           resolve();
-        }, TIMING_CONFIG.comfyuiTimeout);
+        }, ASSET_LOAD_TIMEOUT_MS);
 
         img.onload = () => {
           clearTimeout(timeoutId);
@@ -207,6 +220,39 @@ export const markBackgroundPreloadFailed = (): void => {
 
 /** 先読みが失敗していたか。準備確認はこれを見る */
 export const didBackgroundPreloadFail = (): boolean => backgroundPreloadFailed;
+
+/**
+ * 失敗の記録を消す。
+ *
+ * 🔴 **リセット経路が無いと、一度立った blocker が二度と戻らない。**
+ * これはモジュール大域なので、起動バッチを叩き直しても
+ * （main が `request-ready-report` を投げても）`assetsLoaded: false` のままで、
+ * **遊べているのに「準備できていません」が固定**されていた。
+ * 戻す手段はレンダラの再読込かアプリの再起動だけだった
+ * （敵対的レビュー 2026-09-09 の指摘）。
+ * 再報告の依頼を受けたときに測り直すため、ここで消せるようにする。
+ */
+export const clearBackgroundPreloadFailure = (): void => {
+  backgroundPreloadFailed = false;
+};
+
+/**
+ * 失敗の記録を消して、**実際に読み直してから**測り直す。
+ *
+ * 🔴 フラグを消すだけでは「読めていないのに読めたと言う」ことになる。
+ * preloadSpecificAssets は既に読めているものを飛ばすので、
+ * ここを呼ぶと**失敗した分だけ**が再試行される。
+ * それでも駄目なら blocker は立ったままになる（それが正しい）。
+ */
+export const retryBackgroundPreload = async (assetKeys: AssetKey[]): Promise<void> => {
+  clearBackgroundPreloadFailure();
+  try {
+    await preloadSpecificAssets(assetKeys);
+  } catch (error) {
+    console.error('[準備確認] 素材の読み直しに失敗しました:', error);
+    markBackgroundPreloadFailed();
+  }
+};
 
 // アセットマネージャーを取得する（このファイルの中だけで使う）。
 //

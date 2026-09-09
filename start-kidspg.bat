@@ -308,6 +308,28 @@ for /f "usebackq tokens=1,2,* delims=;" %%A in (`powershell -NoProfile -Command 
 )
 if defined CFG_ROOT set "COMFY_DIR=!CFG_ROOT!"
 
+rem 🔴 **config.json を読めなかったことを、別の理由と混ぜない。**
+rem    読めないと上の PowerShell は 'fumei;fumei;' を返すので CFG_ROOT が空になり、
+rem    以前はそのまま「このプロファイルは別の機体の ComfyUI を指しているので
+rem    こちらでは起こせません」と表示していた——**原因は config.json なのに
+rem    案内は逆方向**で、しかも COMFY_DIR は開発機の既定が黙って残っていた
+rem    （敵対的レビュー 2026-09-09 の指摘）。当日の退避手順が
+rem    「activeProfile を手で書き換える」なので、綴り間違いは現実的な入力。
+if /i "!PROFILE!"=="fumei" (
+  echo        [警告] config.json を読めませんでした。
+  echo               ファイルが壊れているか、activeProfile の綴りが違います。
+  echo               このままでは AI 変換が使えません（カードの絵は全員同じ
+  echo               プレースホルダになります）。
+  echo               確認する場所 : %~dp0config.json の comfyui.activeProfile
+  set /a WARN+=1
+  goto :comfy_done
+)
+if not defined BASEURL (
+  echo        [警告] config.json に comfyui の baseUrl がありません。
+  echo               AI 変換なしで動きます（意図した構成なら問題ありません）。
+  goto :comfy_done
+)
+
 rem Python の場所は2通りある。**配布版は埋め込み Python**（インストール不要）で、
 rem 開発機は venv。どちらでも動くよう、あるほうを使う。
 set "COMFY_PY="
@@ -769,6 +791,13 @@ rem ------------------------------------------------------------
 :launch_detached
 set "LD_RC=9"
 rem LD_ENV: cmd.exe /c 経由で起こすときに前置きする set 文（"set A=1&& set B=2" の形）。
+rem 🔴 **区切りの "&&" の前に空白を置かないこと。** cmd の set は
+rem    行末（次の区切りまで）をそのまま値にするので、"set A=1 && ..." と
+rem    書くと**値が "1 " になる**（実測: set ZZ=C:\kidspg\tmp && → "C:\kidspg\tmp "）。
+rem    末尾の空白はパスの最終要素でしか無視されないため、
+rem    MAGICK_TEMPORARY_PATH は**存在しないフォルダ**を指し、
+rem    TRANSFORMERS_OFFLINE は "1 " になって真値として扱われなかった
+rem    （敵対的レビュー 2026-09-09 の指摘）。LD_ENV の中も同じ規則で書く。
 rem Win32_Process.Create は**呼び出し元の環境を受け継がない**ので、
 rem バッチ側で set しただけでは子に届かない。コマンド行に載せる必要がある
 rem （敵対的レビュー 2026-09-09 の指摘。ComfyUI の OMP_NUM_THREADS と
@@ -778,7 +807,7 @@ rem    組み立てから漏れており、ログを取りながら Electron を
 rem    アプリのフォルダ引数が落ちて別のものが立ち上がる形だった。
 rem    LD_ENV も $log が無いと載らなかったので、どちらか一方でも
 rem    指定されていれば cmd.exe /c で包むようにまとめた。
-for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "$q=[char]34; $exe='!LD_EXE!'; $raw='!LD_RAWARGS!'; $pathArg='!LD_PATHARG!'; $log='!LD_LOG!'; $pre='!LD_ENV!'; $inner=$q+$exe+$q; if($raw){$inner+=' '+$raw}; if($pathArg){$inner+=' '+$q+$pathArg+$q}; if($log){$inner+=' >> '+$q+$log+$q+' 2>&1'}; if($pre -or $log){ if($pre){$inner=$pre+' && '+$inner}; $cl='cmd.exe /c '+$q+$inner+$q } else { $cl=$inner }; $args=@{CommandLine=$cl; CurrentDirectory='!LD_CWD!'}; if('!LD_HIDE!'){ $args['ProcessStartupInformation']=[CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}) }; try{ (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $args -ErrorAction Stop).ReturnValue }catch{ 9 }"`) do set "LD_RC=%%A"
+for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "$q=[char]34; $exe='!LD_EXE!'; $raw='!LD_RAWARGS!'; $pathArg='!LD_PATHARG!'; $log='!LD_LOG!'; $pre='!LD_ENV!'; $inner=$q+$exe+$q; if($raw){$inner+=' '+$raw}; if($pathArg){$inner+=' '+$q+$pathArg+$q}; if($log){$inner+=' >> '+$q+$log+$q+' 2>&1'}; if($pre -or $log){ if($pre){$inner=$pre+'&& '+$inner}; $cl='cmd.exe /c '+$q+$inner+$q } else { $cl=$inner }; $args=@{CommandLine=$cl; CurrentDirectory='!LD_CWD!'}; if('!LD_HIDE!'){ $args['ProcessStartupInformation']=[CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}) }; try{ (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $args -ErrorAction Stop).ReturnValue }catch{ 9 }"`) do set "LD_RC=%%A"
 exit /b 0
 
 rem ------------------------------------------------------------

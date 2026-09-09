@@ -430,24 +430,42 @@ test('--check-compose は magick の起動まで確かめる（--dry-run では�
   assert.match(shown, /magick を起動できません/, '理由が示されていない:\n' + shown);
 });
 
-test('--dry-run は合成の可否を何も確かめない（だから事前確認に使ってはいけない）', () => {
-  // magick が無くても --dry-run は 0 を返す。この性質が残っていることを明示して固定し、
-  // 「--dry-run に戻す」変更が入ったら上のテストと矛盾するようにする
-  const out = execFileSync(process.execPath, [RECOVERY_JS, '--only', '00000000_000000', '--dry-run'], {
+test('--check-compose は合成に使うのと同じ magick を見る', () => {
+  // 🔴 素の 'magick' を別に叩くと、当日PC（PATH に無い携帯版）では
+  //    **合成は通るのに点検だけが落ちて救済が止まる**。
+  //    以前ここには「--dry-run は何も確かめない」という
+  //    **欠陥を仕様として固定する**テストが置いてあった（それを消した）。
+  const out = execFileSync(process.execPath, [RECOVERY_JS, '--check-compose'], {
     cwd: ROOT, encoding: 'utf8', stdio: 'pipe', timeout: 120_000,
-    env: {
-      ...process.env,
-      PATH: path.join(ROOT, 'tools'), Path: path.join(ROOT, 'tools'),
-      KIDSPG_RESULTS_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-dryrun-')),
-    },
   });
-  assert.ok(!out.includes('magick'), '--dry-run が magick を見るようになった（テストを見直すこと）');
+  assert.match(out, /OK : magick の場所 :/, '使う magick の場所を出していない:' + out);
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'test', 'memorial-card-recovery.ts'), 'utf-8');
+  assert.ok(
+    !/spawnSync\('magick'/.test(src),
+    "素の 'magick' を叩いている（携帯版の当日PCで点検だけが落ちる）"
+  );
+  assert.match(src, /service\.getMagickCommand\(\)/, '合成に使う場所を聞いていない');
 });
 
 test('事前確認は --check-compose を使っている（--dry-run へ戻していない）', () => {
   const src = fs.readFileSync(TOOL, 'utf-8');
   assert.match(src, /'--check-compose'/, '事前確認が --check-compose を呼んでいない');
-  const preflight = src.slice(src.indexOf('let canRebuild'), src.indexOf('壊れたカードの退避'));
+  // 🔴 **切り出しが空になっていないことを確かめる。** 以前は
+  //    indexOf('壊れたカードの退避') が indexOf('let canRebuild') より
+  //    **前**にあり（実測 18996 < 21008）slice が '' になっていたため、
+  //    !''.includes('--dry-run') が**無条件で成立**していた。
+  //    --dry-run に戻しても、事前確認ブロックを丸ごと消しても緑だった
+  //    （敵対的レビュー 2026-09-09 の指摘）。
+  const start = src.indexOf('let canRebuild');
+  assert.ok(start > 0, '事前確認ブロックの先頭が見つからない');
+  const end = src.indexOf('} catch (e) {', start);
+  assert.ok(end > start, '事前確認ブロックの終端が見つからない（切り出しが空になる）');
+  const preflight = src.slice(start, end);
+  assert.ok(preflight.length > 100, '切り出しが短すぎる（' + preflight.length + '文字）');
+  assert.ok(
+    preflight.includes("'--check-compose'"),
+    '事前確認ブロックの中で --check-compose を呼んでいない'
+  );
   assert.ok(
     !preflight.includes("'--dry-run'"),
     '事前確認が --dry-run に戻っている（何も確かめられない）'

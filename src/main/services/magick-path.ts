@@ -50,9 +50,23 @@ export const resolveMagick = (searchRoots: string[] = []): MagickResolution => {
   const fromEnv = process.env.KIDSPG_MAGICK;
   if (fromEnv) {
     searched.push(fromEnv);
-    if (fs.existsSync(fromEnv)) {
+    // 🔴 **existsSync だけでは足りない。** フォルダを渡されると受理してしまい、
+    //    spawn が失敗して「ImageMagick を起動できません（…\Temp）」という
+    //    意味の分からない blocker になる。逆に**存在しないパスを渡すと
+    //    黙って PATH へ落ち**、明示した設定が無視されたことがどこにも出ない
+    //    （敵対的レビュー 2026-09-09 の指摘）。
+    let isFile = false;
+    try {
+      isFile = fs.statSync(fromEnv).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (isFile) {
       return { command: fromEnv, from: 'KIDSPG_MAGICK', searched };
     }
+    console.warn(
+      '[ImageMagick] KIDSPG_MAGICK が実行ファイルを指していません（無視して探し直します）: ' + fromEnv
+    );
   }
 
   for (const root of searchRoots) {
