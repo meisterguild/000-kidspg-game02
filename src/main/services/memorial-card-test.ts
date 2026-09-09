@@ -17,7 +17,7 @@ export class MemorialCardTester {
       cardBaseImagesDir: 'card_base_images'
     };
     
-    this.memorialCardService = new MemorialCardService(testConfig);
+    this.memorialCardService = new MemorialCardService(testConfig, undefined, process.cwd());
   }
 
   /**

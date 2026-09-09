@@ -214,6 +214,23 @@ test('フォルダが無くても落ちない', () => {
   assert.deepStrictEqual(findStrayRendererImages(path.join(ROOT, 'そんなフォルダは無い')), []);
 });
 
+test('OS が作るファイルでは落ちない（OneDrive 配下で npm run check が止まらないため）', () => {
+  const { OS_BOOKKEEPING_FILES } = require(LIB);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-os-'));
+  fs.writeFileSync(path.join(dir, 'title_gummy_01.png'), 'x');
+  fs.writeFileSync(path.join(dir, 'dummy_photo.png'), 'x');
+  for (const name of OS_BOOKKEEPING_FILES) fs.writeFileSync(path.join(dir, name), 'x');
+  // 🔴 これで落ちると make-onsite-package が「npm run check が通りません」で
+  //    止まり、**パッケージを作れなくなる**（逃げ道は --skip-check だけ）
+  assert.deepStrictEqual(findStrayRendererImages(dir), [], 'OS のファイルを挙げています');
+
+  // フォルダの中の画像は挙げる（dist に載るので）
+  fs.mkdirSync(path.join(dir, 'old'));
+  fs.writeFileSync(path.join(dir, 'old', 'title_image_01.png'), 'x');
+  assert.deepStrictEqual(findStrayRendererImages(dir), ['old/title_image_01.png']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // -------------------------------------------------- 持ち出してはいけないものの検出
 
 /**

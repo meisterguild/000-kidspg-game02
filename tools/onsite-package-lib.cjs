@@ -166,14 +166,57 @@ const USED_RENDERER_IMAGES = [
   'dummy_photo.png',
 ];
 
+/**
+ * OS が勝手に作るもの。**これで npm run check を落としてはいけない。**
+ *
+ * 🔴 このリポジトリは OneDrive 配下にあるので `Thumbs.db` や `desktop.ini` が
+ * 現れる。反転した検出をそのまま厳格アサーションに繋いだため、
+ * それだけで `npm test` が落ち、`make-onsite-package` の
+ * 「npm run check が通りませんでした」で**パッケージを作れなくなる**
+ * （逃げ道は --skip-check だけ。敵対的レビュー 2026-09-09 の指摘）。
+ * これらは Vite の動的パターンでも読み込み対象にならない（画像ではない）。
+ */
+const OS_BOOKKEEPING_FILES = ['Thumbs.db', 'desktop.ini', '.DS_Store'];
+
+/**
+ * 参照されていない画像を挙げる。
+ *
+ * 判定は「使っているもの以外は全部」（USED_RENDERER_IMAGES の注釈）。
+ * ただし OS が作るものと**フォルダ**は除く——フォルダは
+ * `superseded_2025/` のような退避先を作る運用（このリポジトリでは
+ * リポジトリ直下に置いてある）と衝突するし、そもそもファイル名ではない。
+ * フォルダの中に画像を置いた場合は dist に載るので、
+ * **中身を1段だけ覗いて挙げる**（見逃すより挙げるほうを選ぶ）。
+ */
 const findStrayRendererImages = (imagesDir) => {
   let entries;
   try {
-    entries = fs.readdirSync(imagesDir);
+    entries = fs.readdirSync(imagesDir, { withFileTypes: true });
   } catch {
     return [];
   }
-  return entries.filter((name) => !USED_RENDERER_IMAGES.includes(name)).sort();
+  const stray = [];
+  for (const entry of entries) {
+    if (OS_BOOKKEEPING_FILES.includes(entry.name)) continue;
+    if (entry.isDirectory()) {
+      // 1段だけ覗く。中に画像があると dist に載る
+      let inner = [];
+      try {
+        inner = fs.readdirSync(path.join(imagesDir, entry.name));
+      } catch {
+        inner = [];
+      }
+      for (const name of inner) {
+        if (OS_BOOKKEEPING_FILES.includes(name)) continue;
+        stray.push(entry.name + '/' + name);
+      }
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (USED_RENDERER_IMAGES.includes(entry.name)) continue;
+    stray.push(entry.name);
+  }
+  return stray.sort();
 };
 
 /**
@@ -379,6 +422,7 @@ module.exports = {
   findUnsatisfiedRequires,
   shouldSkipCardBaseEntry,
   findStrayRendererImages,
+  OS_BOOKKEEPING_FILES,
   KNOWN_UNUSED_RENDERER_IMAGES,
   USED_RENDERER_IMAGES,
   REPO_SOURCE_DIRS_TO_SCAN,

@@ -403,7 +403,29 @@ say('       ops : ' + mb(opsSize.bytes) + ' / ' + opsSize.files + ' ファイル
 // ------------------------------------------------------------------ 6. ai / bin
 step('6/8', 'ai（ComfyUI・埋め込み Python・モデル）と bin（ImageMagick）');
 if (APP_ONLY) {
-  say('       ＊ --app-only なので飛ばします');
+  // 🔴 **--app-only でもリポジトリ側の顔写真は見る。** app/dist と app/assets は
+  //    コピーされるので、ここを飛ばすと**検査ゼロで USB へ出て行く**
+  //    （敵対的レビュー 2026-09-09 の指摘）。
+  const appOnlyFiles = [];
+  const listRepoFiles = (dir, prefix) => {
+    if (!fs.existsSync(dir)) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      const rel = prefix + '/' + e.name;
+      if (e.isDirectory()) listRepoFiles(p, rel);
+      else if (e.isFile()) appOnlyFiles.push(rel);
+    }
+  };
+  for (const relDir of REPO_SOURCE_DIRS_TO_SCAN) {
+    listRepoFiles(path.join(ROOT, relDir), relDir);
+  }
+  const appOnlyForbidden = findForbiddenFiles(appOnlyFiles);
+  if (appOnlyForbidden.length > 0) {
+    console.error('\n✗ 持ち出してはいけないものがあります:\n');
+    for (const x of appOnlyForbidden.slice(0, 10)) console.error('  ・' + x.file + '  … ' + x.why);
+    die('取り除いてから作り直してください');
+  }
+  say('       ＊ --app-only なので資材は飛ばします（リポジトリ側の顔写真は確認しました）');
 } else {
   for (const key of ['ai/ComfyUI', 'ai/python_embeded', 'ai/models', 'bin/ImageMagick']) {
     const src = path.join(MATERIALS, key);

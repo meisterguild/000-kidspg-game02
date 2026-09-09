@@ -12,6 +12,7 @@
 # 出力:
 #   COPIED=<件数>  コピー先（C:\kidspg）で食い違った数。0 なら全部一致
 #   MEDIA=<件数>   USB 側（payload の外＝prereq / bat / 手順書）で食い違った数
+#   UNREAD=<件数>  読めなかった数（排他・スキャン中）。0 でなければ「確かめられなかった」
 #
 # ■ なぜ2つに分けるのか（敵対的レビュー 2026-09-09 の指摘）
 # SHA256SUMS には payload の外のものも載る（prereq\VC_redist.x64.exe・
@@ -29,6 +30,12 @@ param(
     [Parameter(Mandatory = $true)][string]$Target
 )
 
+# 🔴 **Stop のまま Get-FileHash を回してはいけない。** 排他で掴まれた／
+# スキャン中の**1ファイル**でスクリプトが停止し、COPIED= も MEDIA= も
+# 1行も出さずに終わる（実測 exit=1・無出力）。呼び出し側は
+# 「[注意] 照合を実行できませんでした」＋警告1件で先へ進むので、
+# **コピー破損も USB 破損もまとめて見逃す**（敵対的レビュー 2026-09-09 の指摘）。
+# ファイルごとに受け止め、読めなかった数を別に返す。
 $ErrorActionPreference = 'Stop'
 
 # payload の外のものは USB のルート（SHA256SUMS のある場所）を起点に見る
@@ -36,9 +43,19 @@ $usbRoot = Split-Path -Parent (Resolve-Path -LiteralPath $SumFile)
 
 $copiedBad = 0
 $mediaBad = 0
-foreach ($line in Get-Content -LiteralPath $SumFile -Encoding UTF8) {
-    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+$unread = 0
 
+# 🔴 **目録そのものが壊れていることも見る。** SHA256SUMS は自分自身を
+# 載せられないので、0バイト／途中で切れていても「すべて一致」になる。
+# 行数がゼロなら照合していないのと同じ。
+$lines = @(Get-Content -LiteralPath $SumFile -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+if ($lines.Count -eq 0) {
+    Write-Output 'COPIED=-1'
+    Write-Output 'MEDIA=-1'
+    Write-Output 'UNREAD=-1'
+    exit 0
+}
+foreach ($line in $lines) {
     # SHA256SUMS の1行は「<64桁のハッシュ><空白2つ><相対パス>」
     $parts = $line -split '  ', 2
     if ($parts.Count -ne 2) { $copiedBad++; continue }
@@ -59,8 +76,15 @@ foreach ($line in Get-Content -LiteralPath $SumFile -Encoding UTF8) {
     $mismatch = $false
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         $mismatch = $true
-    } elseif ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $hash.ToUpper()) {
-        $mismatch = $true
+    } else {
+        # ファイルごとに受け止める（1つ読めないだけで全体を落とさない）
+        try {
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash
+            if ($actual -ne $hash.ToUpper()) { $mismatch = $true }
+        } catch {
+            $unread++
+            continue
+        }
     }
     if ($mismatch) {
         if ($isMedia) { $mediaBad++ } else { $copiedBad++ }
@@ -69,3 +93,4 @@ foreach ($line in Get-Content -LiteralPath $SumFile -Encoding UTF8) {
 
 Write-Output "COPIED=$copiedBad"
 Write-Output "MEDIA=$mediaBad"
+Write-Output "UNREAD=$unread"

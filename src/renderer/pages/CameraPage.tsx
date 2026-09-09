@@ -42,7 +42,7 @@ const CameraPage: React.FC = () => {
         .catch(err => {
           console.error('Failed to get dummy photo path:', err);
           // フォールバックパスを設定
-          setDummyPhotoPath('./assets/images/dummy_photo.png'); 
+          setDummyPhotoPath('./assets/dummy_photo.png'); 
         });
     }
   }, [isUsingDummy]);

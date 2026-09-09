@@ -256,9 +256,19 @@ rem   MEDIA  … USB 側（prereq / bat / 手順書）の食い違い → 対処
 rem 分けないと、当日「やり直しても直らない」ものに対してやり直しを促してしまう。
 set "HASH_BAD="
 set "HASH_MEDIA="
+set "HASH_UNREAD="
 for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify-copy.ps1" -SumFile "%~dp0SHA256SUMS" -Target "%TARGET%"`) do (
   if /i "%%A"=="COPIED" set "HASH_BAD=%%B"
   if /i "%%A"=="MEDIA" set "HASH_MEDIA=%%B"
+  if /i "%%A"=="UNREAD" set "HASH_UNREAD=%%B"
+)
+rem 目録そのものが壊れていた（0バイト・途中で切れている）
+if "!HASH_BAD!"=="-1" (
+  echo        [警告] SHA256SUMS が壊れています（中身が空です）。
+  echo               照合できないので、コピー漏れを見つけられません。
+  echo               USB を作り直してください。
+  set /a WARN+=1
+  goto :hash_done
 )
 if not defined HASH_BAD (
   echo        [注意] 照合を実行できませんでした
@@ -266,9 +276,17 @@ if not defined HASH_BAD (
   goto :hash_done
 )
 if "!HASH_BAD!"=="0" (
-  echo        OK : コピーはすべて一致しました
+  if defined HASH_UNREAD if "!HASH_UNREAD!"=="0" echo        OK : コピーはすべて一致しました
+  if defined HASH_UNREAD if not "!HASH_UNREAD!"=="0" echo        読めたぶんは一致しました（読めなかったものは下の [警告]）
 ) else (
   echo        [警告] 食い違い : !HASH_BAD! 件。コピーが不完全か壊れています。
+  echo               もう一度このバッチを実行してください。
+  set /a WARN+=1
+)
+rem 読めなかったファイルがあると「一致した」とは言えない
+if defined HASH_UNREAD if not "!HASH_UNREAD!"=="0" (
+  echo        [警告] !HASH_UNREAD! 件のファイルを読めませんでした（排他・スキャン中）。
+  echo               ウイルス対策の初回スキャンが終わるのを待ってから、
   echo               もう一度このバッチを実行してください。
   set /a WARN+=1
 )

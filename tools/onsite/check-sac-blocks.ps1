@@ -73,43 +73,66 @@ $unknown = 0
 # 3118（SAC のブロック詳細）はパスを持たないので、単独では誰のものか分からない。
 # ただし実測では**必ず同じ瞬間の 3033/3077 と対で出る**ので、
 # 近い時刻にパス付きの記録があれば「すでに数えたものの重複」として捨てる。
-$pathfulTimes = New-Object System.Collections.ArrayList
+#
+# 🔴 **重複判定に「無関係なブロック」を混ぜないこと。**
+# 以前は $Ours の判定より前に時刻を記録していたため、OTHER（無関係なソフト）の
+# パス付きも時刻表に入っていた。その結果、**自分たちのファイルの 3118 が
+# 単独で出ても、±2秒に無関係なブロックが1件あるだけで重複として捨てられ**、
+# COUNT=0 / UNKNOWN=0 → 「★★★ 暖機できました ★★★」という偽の成功になった
+# （実測で chrome の vulkan-1.dll が4連続で出ることを確認。
+# 敵対的レビュー 2026-09-09 の指摘）。数えるのは**自分たちのパス付き**だけ。
+$oursTimes = New-Object System.Collections.ArrayList
+# 無関係なブロックの時刻も別に持つ。3118 が**そちら**と対なら、それは
+# 「無関係なブロックの重複」なので UNKNOWN ではなく無視でよい
+# （UNKNOWN に数えると、他のソフトが止められた日は暖機が永久に終わらない）。
+$otherTimes = New-Object System.Collections.ArrayList
 
 foreach ($e in ($events | Sort-Object TimeCreated)) {
     # 🔴 パスは空白を含む（\Program Files\... / \Users\...\OneDrive - 会社名\...）。
     #    以前は (\S+) で拾っていたため `\Device\HarddiskVolume3\Program` で切れ、
     #    一覧が無意味な行になるうえ、**空白を含む場所にある自分たちの資材が
-    #    $Ours に当たらず OTHER＝「気にしなくてよい」に落ちていた**
+    #    $Ours に当たらず OTHER＝「気にしなくてよい」に分類されていた**
     #    （敵対的レビュー 2026-09-09 の指摘。前日の暖機は OneDrive 配下や
     #    Program Files 配下で行うので、当日PC では出なくても実害がある）。
     if ($e.Message -match 'attempted to load\s+(.+?)\s+that (?:did not|does not) meet') {
         $raw = $Matches[1]
         # \Device\HarddiskVolumeN\... の形なので、見て分かる形に縮める
         $short = $raw -replace '^\\Device\\HarddiskVolume\d+', ''
-        [void]$pathfulTimes.Add($e.TimeCreated)
         if ($short -match $Ours) {
+            [void]$oursTimes.Add($e.TimeCreated)
             if (-not $oursHits.ContainsKey($short)) { $oursHits[$short] = $e.TimeCreated }
         } else {
+            [void]$otherTimes.Add($e.TimeCreated)
             if (-not $otherHits.ContainsKey($short)) { $otherHits[$short] = $e.TimeCreated }
         }
         continue
     }
     if ($e.Id -eq 3118) {
         # 3118 のメッセージは "Smart App Control Block Deteails" だけでパスが無い。
-        # 前後 2 秒にパス付きの記録があれば、それの重複なので数えない。
+        # 前後 2 秒に**自分たちの**パス付き記録があれば、それの重複なので数えない。
         # 🔴 ここを無条件に数えていたため、無関係なブロック（例: bash.exe が
         #    pip.exe を読もうとした）が 1 件あるだけで UNKNOWN が立ち、
         #    暖機の「★★★ 暖機できました ★★★」に**原理的に到達しなかった**。
-        $near = $false
-        foreach ($t in $pathfulTimes) {
-            if ([math]::Abs(($e.TimeCreated - $t).TotalSeconds) -le 2) { $near = $true; break }
+        $paired = $false
+        foreach ($t in $oursTimes) {
+            if ([math]::Abs(($e.TimeCreated - $t).TotalSeconds) -le 2) { $paired = $true; break }
         }
-        if (-not $near) { $unknown++ }
+        if (-not $paired) {
+            foreach ($t in $otherTimes) {
+                if ([math]::Abs(($e.TimeCreated - $t).TotalSeconds) -le 2) { $paired = $true; break }
+            }
+        }
+        if (-not $paired) { $unknown++ }
+        continue
     }
+    # 🔴 パス付きのはずなのに正規表現が外れたものを**どこにも数えずに消さない**。
+    #    メッセージの言い回しが変わった場合に「0 件＝暖機できた」と誤判定する。
+    $unknown++
 }
 
-foreach ($k in ($oursHits.Keys | Sort-Object)) {
-    '{0:HH:mm:ss}  {1}' -f $oursHits[$k], $k
+# 一覧は時刻順に出す（パス文字列順だと前後して読みづらい）。日付も付ける
+foreach ($k in ($oursHits.Keys | Sort-Object { $oursHits[$_] })) {
+    '{0:MM/dd HH:mm:ss}  {1}' -f $oursHits[$k], $k
 }
 
 Write-Output "COUNT=$($oursHits.Count)"

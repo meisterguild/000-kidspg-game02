@@ -153,6 +153,8 @@ const main = async () => {
 
   if (dirs.length === 0) {
     console.log('[purge] 対象の回がありません');
+    // 🔴 ここで抜けても ComfyUI 側は片付ける（撤収時の典型手順で通る道）
+    await purgeComfyUIScratch();
     return;
   }
 
@@ -202,6 +204,8 @@ const main = async () => {
 
   if (targets.length === 0) {
     console.log('[purge] 消せる写真はありません');
+    // 一度 --apply したあとの再実行はここに来る。ComfyUI 側は片付ける
+    await purgeComfyUIScratch();
     return;
   }
 
@@ -289,10 +293,14 @@ const main = async () => {
   // 枠の合間に叩いたときに生成中の子の input や、まだ /view で取っていない
   // output を消せてしまう（その子のカードはプレースホルダに倒れる。
   // 敵対的レビュー 2026-09-09 の指摘）。
-  await purgeComfyUIScratch();
-
-  // 取ったロックは必ず返す（残すとアプリの起動時点検が毎回飛ばされる）
-  if (releaseLock) { try { await releaseLock(); } catch { /* 解放できなくても続ける */ } }
+  //
+  // 🔴 **例外が出てもロックは返す。** 残すとアプリの起動時点検が
+  // staleMs（10分）まで毎回飛ばされる。
+  try {
+    await purgeComfyUIScratch();
+  } finally {
+    if (releaseLock) { try { await releaseLock(); } catch { /* 解放できなくても続ける */ } }
+  }
 };
 
 /**

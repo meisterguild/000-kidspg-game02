@@ -39,14 +39,38 @@ const BAT_NAME = '再生成.bat';
 
 const argv = process.argv.slice(2);
 const has = (name) => argv.includes(`--${name}`);
-const flag = (name) => {
+/**
+ * 🔴 **値の書き忘れを黙って通してはいけない。**
+ * `--only --remove` のように書くと、以前は null を返して ONLY 無し＝
+ * **全フォルダが対象**になっていた。retry-failed.cjs と purge-photos.cjs は
+ * 同じ罠に検証を入れているのに、ここだけ抜けていた
+ * （敵対的レビュー 2026-09-09 の指摘）。
+ */
+const flagErrors = [];
+const flag = (name, { pattern, example } = {}) => {
   const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : null;
+  if (i < 0) return null;
+  const next = argv[i + 1];
+  if (!next || next.startsWith('--')) {
+    flagErrors.push(`--${name} には値を指定してください` + (example ? `（例: --${name} ${example}）` : ''));
+    return null;
+  }
+  if (pattern && !pattern.test(next)) {
+    flagErrors.push(`--${name} の指定が想定の形ではありません: ${next}` + (example ? `（例: ${example}）` : ''));
+    return null;
+  }
+  return next;
 };
 
 const APPLY = has('apply');
 const REMOVE = has('remove');
-const ONLY = flag('only');
+const ONLY = flag('only', { pattern: /^\d{8}_\d{6}$/, example: '20260912_101112' });
+if (flagErrors.length > 0) {
+  console.error('[regen-bat] 指定に誤りがあります:');
+  for (const e of flagErrors) console.error('  ・' + e);
+  console.error('\n何もしていません。');
+  process.exit(1);
+}
 
 // results の場所は tools/lib/resolve-results-dir.cjs に集めてある
 const resolvedResults = resolveResultsDir(ROOT);
