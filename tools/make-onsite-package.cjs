@@ -398,8 +398,13 @@ if (APP_ONLY) {
     copyTree(src, path.join(payload, key), { progress: size.bytes > 1024 * 1024 * 1024 });
     say('       OK : ' + key);
   }
+  // 🔴 **VC++ ランタイムは必ず積む。** 当日PC は完全オフラインなので、
+  //    「入っていなかった」と当日気づいても取りに行けない（約25MB）。
+  //    目録でも required: true にしてあるので、ここに来た時点で必ずある。
   const vc = path.join(MATERIALS, 'prereq/VC_redist.x64.exe');
-  if (fs.existsSync(vc)) copyFile(vc, path.join(outDir, 'prereq/VC_redist.x64.exe'));
+  if (!fs.existsSync(vc)) die('prereq/VC_redist.x64.exe がありません（build-materials.ps1 を実行してください）');
+  copyFile(vc, path.join(outDir, 'prereq/VC_redist.x64.exe'));
+  say('       OK : prereq/VC_redist.x64.exe  (' + mb(fs.statSync(vc).size) + ')');
 }
 
 // --------------------------------------------------- 6.5 当日PCの置き場所へ合わせる

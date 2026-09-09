@@ -295,11 +295,15 @@ KidsPG2026_setup\                （USB のルート）
 | 中身 | サイズ |
 |---|---:|
 | `ai/models`（4本） | 4.18 GB |
-| `ai/python_embeded`（torch CPU 込み） | 約 1.9 GB |
-| `ai/ComfyUI`（本体） | 約 0.15 GB |
-| `app` | 約 0.30 GB |
-| `bin` + `ops` | 約 0.18 GB |
-| **合計** | **約 6.8 GB** |
+| `ai/python_embeded`（torch CPU 込み） | 2.11 GB |
+| `ai/ComfyUI`（本体） | 0.07 GB |
+| `app` | 0.31 GB |
+| `bin` + `ops` | 0.17 GB |
+| `prereq/VC_redist.x64.exe` | 0.03 GB |
+| **合計** | **約 6.9 GB** |
+
+（2026-09-09 に実際に作った USB の `payload` を実測した値。
+`SHA256SUMS` などルート側のファイルを含めた USB の総量は 約 6.9 GB）
 
 **USB は 16GB 以上・exFAT か NTFS**（8GB では入らない。最大ファイルは 2.1GB なので
 FAT32 の 4GB 制限そのものには当たらないが、総量が入らない）。

@@ -201,6 +201,23 @@ try {
     if ($LASTEXITCODE -ne 0) { Die 'ComfyUI の import が通りません（_pth の ..\ComfyUI を確認）' }
 } finally { Pop-Location }
 
+# ------------------------------------------------------------------ VC++ ランタイム
+Step 'VC++ 2015-2022 再頒布可能パッケージを取り込む'
+# 🔴 **当日PC は完全オフライン。**「無かった」と当日気づいても取りに行けないので、
+#    Windows 11 なら通常入っているものでも**必ず積む**（約 25MB）。
+#    入っていれば 0_セットアップ.bat の点検が通り、これは使われないままになる。
+$vc = Join-Path $Materials 'prereqVC_redist.x64.exe'
+if (Test-Path -LiteralPath $vc) {
+    Say ('       すでにあります : {0:N1} MB' -f ((Get-Item $vc).Length / 1MB))
+} else {
+    Say '       取得中: VC_redist.x64.exe'
+    Invoke-WebRequest 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $vc -UseBasicParsing
+    Say ('       OK : {0:N1} MB' -f ((Get-Item $vc).Length / 1MB))
+}
+# 中身が本当に実行ファイルかを見る（取得に失敗して HTML を掴むことがある）
+$head = [System.IO.File]::ReadAllBytes($vc)[0..1]
+if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { Die "VC_redist.x64.exe が実行ファイルではありません: $vc" }
+
 & (Join-Path $MAGICK 'magick.exe') -version | Select-Object -First 1 | ForEach-Object { Say "       OK : $_" }
 & (Join-Path $NODE 'node.exe') -v | ForEach-Object { Say "       OK : node $_" }
 

@@ -251,15 +251,38 @@ if exist "!MAGICK!" (
   set /a WARN+=1
 )
 
+rem Node は当日PCではこれ1つだけ（PATH には無い）。無い／起動できないと
+rem 作り直し（再生成.bat）と、当日手順書の検証4（comfyui-smoke）が動かない。
+rem 以前は [注意] にしていたが、他の実行ファイルと同じ [警告] に揃える
+rem （敵対的レビュー 2026-09-09 の指摘）。
 if exist "%TARGET%\ops\node\node.exe" (
-  for /f "tokens=*" %%V in ('"%TARGET%\ops\node\node.exe" -v 2^>nul') do echo        OK : Node  %%V
+  for /f "tokens=*" %%V in ('"%TARGET%\ops\node\node.exe" -v 2^>nul') do (
+    if not defined NODE_VER set "NODE_VER=%%V"
+  )
+  if defined NODE_VER (
+    echo        OK : Node  !NODE_VER!
+  ) else (
+    echo        [警告] node.exe はありますが起動できません。
+    echo               作り直しツールと、当日手順書の検証4が使えません。
+    echo               Smart App Control のブロックを疑ってください。
+    set /a WARN+=1
+  )
 ) else (
-  echo        [注意] Node の携帯版がありません。当日の作り直しツールが使えません。
+  echo        [警告] Node の携帯版がありません。当日の作り直しツールが使えません。
   set /a WARN+=1
 )
 
 if exist "%TARGET%\ai\python_embeded\python.exe" (
-  for /f "tokens=*" %%V in ('"%TARGET%\ai\python_embeded\python.exe" -V 2^>^&1') do echo        OK : Python  %%V
+  for /f "tokens=*" %%V in ('"%TARGET%\ai\python_embeded\python.exe" -V 2^>^&1') do (
+    if not defined PY_VER set "PY_VER=%%V"
+  )
+  if defined PY_VER (
+    echo        OK : Python  !PY_VER!
+  ) else (
+    echo        [警告] python.exe はありますが起動できません。AI 変換が使えません。
+    echo               Smart App Control のブロックを疑ってください。
+    set /a WARN+=1
+  )
 ) else (
   echo        [警告] 埋め込み Python がありません。AI 変換が使えません。
   set /a WARN+=1

@@ -3,7 +3,9 @@
 USB を差して `0_セットアップ.bat` を実行し、Windows の設定を4つ直せば終わりです。
 **インストール操作はありません**（例外は下の「VC++ ランタイム」だけ）。
 
-所要時間の目安: コピー 10分 ＋ 設定 5分 ＋ 検証 10分（うち AI 生成の1枚に約3分）。
+所要時間の目安: コピー 10分 ＋ 設定 5分 ＋ 検証 15分（うち AI 生成の1枚に約3分）
+＋ **Smart App Control の暖機 20〜30分と、そのあとの再起動**（→ 「2. Windows の設定」）。
+🔴 **暖機はネットに繋がる場所で、前日までに済ませてください。** 会場では取り返せません。
 
 ---
 
@@ -28,6 +30,7 @@ USB のルート
 ├── 3_このパッケージの設計.md                   ← 判断の理由（exe を作らない等）
 ├── verify-copy.ps1                            ← 0_セットアップ.bat が呼ぶ
 ├── payload\                                   ← 中身（app / ops / ai / bin）
+├── prereq\VC_redist.x64.exe                  ← VC++ が無かったときだけ使う（約25MB）
 ├── manifest.json                              ← 版と、前提にしている置き場所
 └── SHA256SUMS                                 ← コピー漏れ・破損の検出用
 ```
@@ -144,7 +147,7 @@ C:\kidspg\app\start-kidspg.bat
 [7/7] 準備確認
        ゲーム画面が出るのを待ちます（最大 90 秒）…
 ......
-       OK : ゲーム画面が出ました（表示中: TOP）
+       OK : ゲーム画面が出ました（表示中: TOP ／ 判定時刻 09:12:33）
 
 ============================================================
   ★★★ 準備完了 ★★★  そのまま遊べます
@@ -182,25 +185,33 @@ ComfyUI の初回起動はモデルの読み込みに数分かかります。バ
 
 ## 4. 検証（当日を迎える前に必ず通す）
 
-| # | 見るもの | 期待 |
-|---|---|---|
-| 1 | `C:\kidspg\bin\ImageMagick\magick -version` | ImageMagick 7 が表示される |
-| 2 | ブラウザで `http://127.0.0.1:8188/system_stats` | JSON が返る |
-| 3 | `ops\node\node.exe ops\tools\comfyui-smoke.cjs` | モデル4本が載っていて、1枚生成できる（CPU で約3分） |
-| 4 | `app\start-kidspg.bat /dryrun` | **[警告] が0件** |
-| 5 | 手で1プレイ通す | `app\results\<日時>\memorial_card_<日時>.png` ができる |
-| 6 | ランキング画面 | いま作ったカードが並ぶ |
+🔴 **上から順に実行してください。** 3 と 4 は ComfyUI が動いていないと必ず落ちるので、
+先に 1 で起こします（起こしたウィンドウは 4 が終わるまで閉じないこと）。
 
-3 は次のように実行します（`ops\` の中で動かします）。
+| # | やること／見るもの | 期待 |
+|---|---|---|
+| 1 | `C:\kidspg\ai\ComfyUI\start-comfyui.bat` を実行して**開いたままにする** | ⚠️ **コンソールには何も出ません**（出力は `ai\ComfyUI\logs\comfyui.log` へ）。起動できたかは 3 で見ます。初回はモデル読み込みで数分 |
+| 2 | `C:\kidspg\bin\ImageMagick\magick.exe -version` | ImageMagick 7 が表示される |
+| 3 | ブラウザで `http://127.0.0.1:8188/system_stats` | JSON が返る（1 が動いていること） |
+| 4 | `ops\node\node.exe ops\tools\comfyui-smoke.cjs` | モデル4本が載っていて、1枚生成できる（CPU で約3分） |
+| 5 | 1 のウィンドウを閉じてから `app\start-kidspg.bat /dryrun` | **[警告] が0件** |
+| 6 | `app\start-kidspg.bat` → 手で1プレイ通す | `app\results\<日時>\memorial_card_<日時>.png` ができる |
+| 7 | ランキング画面 | いま作ったカードが並ぶ |
+
+4 は次のように実行します（`ops\` の中で動かします）。
 
 ```
 cd C:\kidspg\ops
 node\node.exe tools\comfyui-smoke.cjs
 ```
 
-> 5 で**カードはできるが絵がプレースホルダ**の場合、ゲームは動いていて AI 変換だけが
+> 5 は ComfyUI が**動いていても動いていなくても**通ります（起動バッチは止まっていれば
+> 自分で起こすため）。6 では `start-kidspg.bat` が ComfyUI ごと面倒を見るので、
+> 1 で開いたウィンドウは先に閉じてください（8188 番の取り合いになります）。
+
+> 6 で**カードはできるが絵がプレースホルダ**の場合、ゲームは動いていて AI 変換だけが
 > 通っていません。`app\logs\comfyui.log` を見てください。
-> **カードが1枚もできない**場合は ImageMagick です（検証1へ戻る）。
+> **カードが1枚もできない**場合は ImageMagick です（検証2へ戻る）。
 
 ---
 
@@ -208,7 +219,7 @@ node\node.exe tools\comfyui-smoke.cjs
 
 | 症状 | 見るところ |
 |---|---|
-| 「準備できていません」と出た | まず [警告] の文面。`logs\ready.json` が無ければ画面まで到達していない（Smart App Control を疑う）。あれば中の `warnings` に理由が入っている |
+| 「準備できていません」と出た | まず [警告] の文面。`logs\ready.json` が無ければ画面まで到達していない（Smart App Control を疑う）。あれば中の `blockers`（これがあると遊べない）と `notes`（遊べるが困る）に理由が入っている |
 | アプリが起動しない・何も出ない | `start-kidspg.bat /dryrun` の [警告]。それでも出ないなら Smart App Control（上記） |
 | カードが1枚もできない | ImageMagick。`bin\ImageMagick\magick.exe` があるか |
 | 絵が全員同じプレースホルダ | ComfyUI が落ちている。`app\logs\comfyui.log` |

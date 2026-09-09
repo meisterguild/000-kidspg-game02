@@ -83,7 +83,7 @@ flowchart LR
 2. `npm ci` で依存を入れる
 3. AI変換まで試すなら **ComfyUI** を用意する。手順とモデルの入手先は
    **[docs/comfyui-local-setup.md](docs/comfyui-local-setup.md)** にまとめてある
-   （DreamShaper 8 / Hyper-SD15-8steps-CFG-lora / ControlNet Canny の3つが要る）
+   （DreamShaper 8 / sd-vae-ft-mse / ControlNet Canny / Hyper-SD15-8steps-CFG-lora の4本が要る）
 4. ComfyUI の場所が違う場合は `config.json` の
    `comfyui.profiles.local.baseUrl` を自分の環境に合わせる
 5. `npm start`
@@ -192,7 +192,7 @@ npm start
 
 1. TOP 画面 →「はじめる」
 2. 撮影画面でニックネームを選んで撮影
-3. カウントダウン → パズル（90秒）
+3. カウントダウン → パズル（120秒）
 4. 結果画面 → **カードが `results/<日時>/memorial_card_<日時>.png` に出力される**
 5. ランキング画面にカードが並ぶ
 
@@ -562,9 +562,16 @@ kidspg-game-2026/
 | `onsite-package-lib.cjs` | パッケージの組み立ての決めごと（何を入れ、何を落とすか） |
 | `onsite-materials.json` | リポジトリの外の資材の入手元と期待サイズ |
 | `onsite/0_setup.bat` | 当日PCで実行するセットアップ（コピーと点検だけ） |
+| `onsite/verify-copy.ps1` | `SHA256SUMS` と突き合わせてコピー漏れ・破損を見つける（0_setup が呼ぶ） |
+| `onsite/build-materials.ps1` | **開発機で**リポジトリ外の資材を組む（埋め込み Python・ComfyUI 複製・Node・ImageMagick・VC++） |
+| `onsite/warmup.bat` | 前日までにネット有りで通す暖機（1枚生成 → Smart App Control のブロック件数を報告） |
+| `onsite/check-sac-blocks.ps1` | Smart App Control / Code Integrity のブロックを数える（warmup と起動バッチが呼ぶ） |
+| `lib/resolve-results-dir.cjs` | `results/` の場所を決める判断を1か所に集めたもの（開発機と配布された `ops/` の両方に対応） |
 | `test-onsite-package.cjs` | パッケージの組み立ての決めごとの単体テスト |
 | `test-readiness.cjs` | 「準備完了」の判定と、起動バッチとの取り決めの単体テスト |
 | `notify.sh` | 作業の節目をスマホへ通知（ntfy） |
+| `make-assets.sh` | 画面素材の下ごしらえ（開発時のみ） |
+| `make-cards.sh` | 記念カードの土台画像の下ごしらえ（開発時のみ） |
 | `dl-models-local.sh` | **local プロファイル用（SD1.5・4本）** のモデルを HuggingFace から取得（サイズ検証つき） |
 | `dl-models.sh` | server プロファイル用（SDXL・5本）のモデルを HuggingFace から取得 |
 | `fetch-models.sh` | 社内 AI サーバーからモデルを取り込む（社外では使えません） |

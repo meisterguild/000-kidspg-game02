@@ -83,9 +83,9 @@
       "key": "vc_redist",
       "dest": "prereq/VC_redist.x64.exe",
       "kind": "file",
-      "required": false,
+      "required": true,
       "expectedBytes": 0,
-      "note": "torch が要求する VC++ 2015-2022 再頒布可能パッケージ。Windows 11 なら通常入っているので、点検で不足していたときだけ使う。これだけはインストール操作が要る。https://aka.ms/vs/17/release/vc_redist.x64.exe"
+      "note": "torch が要求する VC++ 2015-2022 再頒布可能パッケージ。🔴 **当日PC は完全オフラインなので必ず積む。**「無かった」と当日気づいても取りに行けない（約25MB）。Windows 11 なら通常入っているため、ふつうは積んだまま使われない。これだけはインストール操作（管理者権限）が要る。build-materials.ps1 が自動で取得する。https://aka.ms/vs/17/release/vc_redist.x64.exe"
     }
   ],
   "_must_be_empty_policy": "mustBeEmpty は「フォルダはあってよいが、中にファイルがあってはいけない」。ComfyUI は input/ と output/ を使うので空で用意する必要があるが、そこに検証で使った顔写真が残るのは絶対に避けたい。フォルダの存在自体を禁じると、空で用意した正しい状態まで弾いてしまう（2026-09-09 にそれで作成が止まった）。"

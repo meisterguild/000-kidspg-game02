@@ -21,7 +21,8 @@
  *
  * 注意:
  *   - 事前に `npm run build` が必要（アプリ本体と同じ置換関数 dist/.../workflow-template.js を使う）
- *   - **CPU 実行では1回の生成に十数分かかる。** 固まったように見えても待つこと
+ *   - **CPU 実行では1回の生成に約3分かかる**（inputSize 384・実測170秒）。
+ *     固まったように見えても待つこと
  *   - `--runs 2` 以上にすると2回目以降はモデルロード済みの「温まった」時間が測れる。
  *     当日の人数計算に使うべきなのは2回目以降の値
  *   - `--gen inputSize=384` のように書くと、config.json の生成パラメータを
@@ -241,7 +242,7 @@ const main = async () => {
   console.log(`[smoke] ComfyUI    : ${stats.system?.comfyui_version ?? '?'} / python ${stats.system?.python_version?.split(' ')[0] ?? '?'} / torch ${stats.system?.pytorch_version ?? '?'}`);
   console.log(`[smoke] device     : type=${device?.type ?? '?'} name=${device?.name ?? '?'} vram=${device?.vram_total ?? '?'}`);
   if (device?.type === 'cpu') {
-    console.log('[smoke] ※ CPU 実行です。1枚あたり十数分かかります。途中で止めないでください');
+    console.log('[smoke] ※ CPU 実行です。1枚あたり約3分かかります（inputSize 384・実測170秒）。途中で止めないでください');
   }
 
   // キューが空でないと計測値が意味を持たない
