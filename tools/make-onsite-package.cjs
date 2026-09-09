@@ -471,6 +471,19 @@ copyFile(path.join(__dirname, 'onsite', '0_setup.bat'), path.join(outDir, '0_セ
 // 0_セットアップ.bat が隣から呼ぶ。忘れると照合だけが黙って飛ぶ
 copyFile(path.join(__dirname, 'onsite', 'verify-copy.ps1'), path.join(outDir, 'verify-copy.ps1'));
 copyFile(path.join(ROOT, 'docs', 'setup-onsite.md'), path.join(outDir, '1_当日手順書.md'));
+// ComfyUI の構築手順も入れる。当日PCでは作り直せない（オフラインで pip も使えない）が、
+// 「どう組んだものが入っているのか」が分からないと、壊れたときに何も判断できない。
+// ⚠️ この文書は venv 前提で書かれている。当日PCに入るのは埋め込み Python なので、
+//    Python の作り方の節は docs/distribution-plan.md のほうが正しい。
+//    その読み替えは 1_当日手順書.md の中で案内している。
+copyFile(
+  path.join(ROOT, 'docs', 'comfyui-local-setup.md'),
+  path.join(outDir, '2_ComfyUI構築手順（参考・開発機向け）.md')
+);
+copyFile(
+  path.join(ROOT, 'docs', 'distribution-plan.md'),
+  path.join(outDir, '3_このパッケージの設計.md')
+);
 
 // ------------------------------------------------------------------ 8. 目録と自己検証
 step('8/8', '目録（manifest / SHA256SUMS）と自己検証');

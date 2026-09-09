@@ -66,6 +66,65 @@ electron-builder が win-unpacked へコピーした自分自身は隣の exe �
 > もう1点、torch は **VC++ 2015-2022 再頒布可能パッケージ**を要求する。Windows 11 なら
 > 通常入っているが、点検を入れ、無い場合だけインストールを案内する（唯一の例外）。
 
+#### 埋め込み Python の組み方（開発機で1回だけ）
+
+> ⚠️ **この手順はまだ実行して確かめていません**（2026-09-09 時点）。
+> ComfyUI 公式ポータブルが同じ方式なので通る見込みですが、実際に組んで
+> 1枚生成できることを見たら、この見出しから警告を外してください。
+
+作る場所は資材置き場の中（`<materials>/ai/python_embeded`）。
+できたものは**そのままコピーするだけ**なので、当日PCでは何もしません。
+
+```powershell
+$M = "C:\WORK\AI\onsite-materials"
+$PY = "$M\ai\python_embeded"
+
+# 1. 埋め込み配布版の Python 3.12 を展開する
+#    https://www.python.org/downloads/windows/ の "Windows embeddable package (64-bit)"
+#    ※ インストーラ（*-amd64.exe）ではなく zip のほう
+Expand-Archive python-3.12.10-embed-amd64.zip -DestinationPath $PY
+
+# 2. site-packages を有効にする
+#    🔴 embeddable 版は既定で site を読まない。ここを直さないと pip で入れたものが
+#    まったく import できず、「pip は成功するのに torch が無い」という状態になる
+(Get-Content "$PY\python312._pth") -replace '^#\s*import site', 'import site' |
+    Set-Content "$PY\python312._pth"
+
+# 3. pip を入れる（embeddable 版には同梱されていない）
+Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile "$PY\get-pip.py"
+& "$PY\python.exe" "$PY\get-pip.py" --no-warn-script-location
+
+# 4. torch は CPU 版を明示して入れる（既定のインデックスだと CUDA 版が来る）
+& "$PY\python.exe" -m pip install torch torchvision torchaudio `
+    --index-url https://download.pytorch.org/whl/cpu
+
+# 5. ComfyUI の依存
+& "$PY\python.exe" -m pip install -r "$M\ai\ComfyUI\requirements.txt"
+
+# 6. 確かめる
+& "$PY\python.exe" -c "import torch, torchvision; print(torch.__version__, torch.cuda.is_available())"
+```
+
+`torch.cuda.is_available()` が `False` で正しい（CPU 実行）。
+
+**踏みやすいところ**
+
+| | |
+|---|---|
+| `python312._pth` の `import site` | コメントのままだと pip で入れたものを一切 import できない。**手順2を飛ばすと必ず詰む** |
+| `Scripts\*.exe` | embeddable 版では当てにできない。`python.exe -m pip` の形で呼ぶこと |
+| `venv` / `tkinter` | embeddable 版には無い。ComfyUI は使わないので問題ないが、`-m venv` は通らない |
+| torch のサイズ | CPU 版でも約1.9GB。ダウンロードに時間がかかる |
+| VC++ ランタイム | torch が要求する。当日PCで無い場合だけインストールが要る（唯一の例外） |
+| 版を固定する | Python も torch も版を控えて `docs/comfyui-local-setup.md` の PINNED と揃えること。**当日PCで pip は使えない**ので、後から差分を埋められない |
+
+最後に、資材置き場のまま ComfyUI を起こして通しを確かめる。
+
+```powershell
+& "$PY\python.exe" "$M\ai\ComfyUI\main.py" --cpu --listen 127.0.0.1 --port 8188 --disable-auto-launch
+# 別の窓で: /system_stats が JSON を返し、/object_info にモデル4本が載っていること
+```
+
 ### 3. 場所の書き換えは「当日PC」ではなく「作るとき」にやる
 
 ComfyUI の置き場所は3箇所に現れる。

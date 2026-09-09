@@ -29,7 +29,7 @@
       "dest": "ai/python_embeded",
       "kind": "dir",
       "required": true,
-      "note": "埋め込み配布版 Python 3.12（zip 展開のみ・レジストリを触らない）に torch CPU と ComfyUI の依存を入れたもの。ComfyUI 公式ポータブルと同じ方式で、インストール操作なしでコピーして動く。組み方は docs/distribution-plan.md。",
+      "note": "埋め込み配布版 Python 3.12（zip 展開のみ・レジストリを触らない）に torch CPU と ComfyUI の依存を入れたもの。ComfyUI 公式ポータブルと同じ方式で、インストール操作なしでコピーして動く。組み方は docs/distribution-plan.md の「埋め込み Python の組み方」（開発機で1回だけ組み、以後はコピーするだけ）。",
       "mustContain": ["python.exe"]
     },
     {

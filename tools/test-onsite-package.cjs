@@ -285,6 +285,42 @@ test('外部資材の目録は必要な項目を持ち、venv を持ち込まな
   }
 });
 
+/**
+ * 目録の note は「どこを読めば作れるか」を指している。**指し先が無いと空手形**になる。
+ * 実際に 2026-09-09 に、note が「組み方は docs/distribution-plan.md」と言っているのに
+ * その文書に手順が書かれていない状態になっていた。
+ */
+test('目録が指している「埋め込み Python の組み方」が実在する', () => {
+  const def = JSON.parse(fs.readFileSync(path.join(__dirname, 'onsite-materials.json'), 'utf8'));
+  const py = def.materials.find((m) => m.key === 'python_embeded');
+  const plan = fs.readFileSync(path.join(ROOT, 'docs/distribution-plan.md'), 'utf8');
+  assert.match(py.note, /埋め込み Python の組み方/, 'note が組み方の節を指していません');
+  assert.match(plan, /埋め込み Python の組み方/, 'distribution-plan.md にその節がありません');
+  // 手順が本当に書かれているか（踏むと必ず詰まる2箇所を目印にする）
+  assert.match(plan, /import site/, '_pth の import site を有効にする手順がありません');
+  assert.match(plan, /download\.pytorch\.org\/whl\/cpu/, 'torch を CPU 版で入れる手順がありません');
+});
+
+test('パッケージには ComfyUI の構築手順と設計の文書も入れる', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'make-onsite-package.cjs'), 'utf8');
+  // 当日PCで ComfyUI を作り直すことはできないが、「何がどう入っているのか」が
+  // 分からないと壊れたときに何も判断できない
+  assert.match(src, /setup-onsite\.md/, '当日手順書を入れていません');
+  assert.match(src, /comfyui-local-setup\.md/, 'ComfyUI 構築手順を入れていません');
+  assert.match(src, /distribution-plan\.md/, 'パッケージの設計を入れていません');
+  for (const rel of ['docs/setup-onsite.md', 'docs/comfyui-local-setup.md', 'docs/distribution-plan.md']) {
+    assert.ok(fs.existsSync(path.join(ROOT, rel)), rel + ' がありません');
+  }
+});
+
+test('当日手順書は、入っている Python が venv ではないことを断っている', () => {
+  // 同梱する構築手順（comfyui-local-setup.md）は venv 前提で書かれている。
+  // 読み替えを案内しないと、当日 venv を作ろうとして詰まる
+  const onsite = fs.readFileSync(path.join(ROOT, 'docs/setup-onsite.md'), 'utf8');
+  assert.match(onsite, /venv/, 'venv との違いに触れていません');
+  assert.match(onsite, /埋め込み/, '埋め込み配布版であることに触れていません');
+});
+
 test('目録のモデル4本は config.json のワークフローが要求するものと一致する', () => {
   const def = JSON.parse(fs.readFileSync(path.join(__dirname, 'onsite-materials.json'), 'utf8'));
   const models = def.materials.find((m) => m.key === 'models');
