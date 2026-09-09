@@ -24,6 +24,7 @@ import {
   type WorkflowTemplate,
 } from './services/workflow-template';
 import { resolveComfyUIConfig, type ResolvedComfyUIConfig } from './services/comfyui-config';
+import { launchComfyUI } from './services/comfyui-launcher';
 import { applyConfigPatch } from './services/config-writer';
 
 /**
@@ -825,6 +826,55 @@ class ElectronApp {
         console.error('ComfyUI の画面を開けませんでした:', error);
         return { success: false, error: String(error) };
       }
+    });
+
+    // ComfyUI を起動する（起動バッチを、開いたままの PowerShell ウィンドウで走らせる）。
+    // **叩くのは config.json で解決したパスだけ**。画面からパスは受け取らない。
+    ipcMain.handle('comfyui-launch', async () => {
+      const paths = this.comfyUI?.paths;
+      if (!paths) {
+        return {
+          success: false,
+          error:
+            'いま選ばれているプロファイル（' +
+            (this.comfyUI?.profileName ?? '不明') +
+            '）には ComfyUI の物理パスが設定されていません。' +
+            '別の機体で動かしている場合はそちらで起動してください',
+        };
+      }
+      // すでに応答しているなら起動しない。二重に立てるとポートが埋まっていて
+      // 後から立てたほうが即座に落ちるだけだが、窓が増えてどれが本体か分からなくなる。
+      if (this.comfyUIService && (await this.comfyUIService.healthCheck())) {
+        return { success: true, alreadyRunning: true, startBat: paths.startBat };
+      }
+      const outcome = await launchComfyUI(paths);
+      if (!outcome.success) {
+        console.error('[ComfyUI] 起動に失敗:', outcome.error);
+      } else {
+        console.log('[ComfyUI] 起動バッチを実行しました:', outcome.startBat);
+      }
+      return { ...outcome, alreadyRunning: false };
+    });
+
+    // ComfyUI の input / output フォルダをエクスプローラーで開く。
+    // 当日「写真が上がっているか」「絵が出ているか」を目で確かめるための入口。
+    ipcMain.handle('comfyui-open-folder', async (event, which: unknown) => {
+      const paths = this.comfyUI?.paths;
+      if (!paths) {
+        return { success: false, error: 'ComfyUI の物理パスが設定されていません' };
+      }
+      // 開けるのは2箇所だけ。レンダラから任意のパスは受け取らない
+      if (which !== 'input' && which !== 'output') {
+        return { success: false, error: '開けるのは input / output だけです' };
+      }
+      const target = which === 'input' ? paths.input : paths.output;
+      const failure = await shell.openPath(target);
+      // openPath は失敗を**例外ではなく文字列**で返す（空文字なら成功）
+      if (failure) {
+        console.error('[ComfyUI] フォルダを開けませんでした:', target, failure);
+        return { success: false, error: target + ' を開けませんでした: ' + failure };
+      }
+      return { success: true, path: target };
     });
 
     // ComfyUI画像変換リクエスト

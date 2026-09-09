@@ -17,7 +17,7 @@
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
-    "test": "node --test tools/test-workflow-template.cjs tools/test-config-writer.cjs tools/test-magick-script.cjs tools/test-png-integrity.cjs tools/test-startup-consistency.cjs tools/test-retry-failed.cjs tools/test-exit-path.cjs tools/test-quality-fallback.cjs tools/test-composition-parity.cjs tools/test-purge-photos.cjs tools/test-regen-bat.cjs tools/test-rank-and-level.cjs tools/test-solve-stage.mjs tools/test-stage-balance.mjs",
+    "test": "node --test tools/test-workflow-template.cjs tools/test-comfyui-paths.cjs tools/test-config-writer.cjs tools/test-magick-script.cjs tools/test-png-integrity.cjs tools/test-startup-consistency.cjs tools/test-retry-failed.cjs tools/test-exit-path.cjs tools/test-quality-fallback.cjs tools/test-composition-parity.cjs tools/test-purge-photos.cjs tools/test-regen-bat.cjs tools/test-rank-and-level.cjs tools/test-solve-stage.mjs tools/test-stage-balance.mjs",
     "check": "npm run build && npx tsc --noEmit && npm run lint && npm test",
     "lint": "eslint src --ext .ts,.tsx,.js,.jsx",
     "lint:fix": "npm run lint -- --fix",

@@ -9,7 +9,8 @@ import type {
   ComfyUIStatusResult,
   ComfyUIHealthResult,
   ComfyUIJobsResult,
-  ComfyUIStatus
+  ComfyUIStatus,
+  ComfyUILaunchResult
 } from '@shared/types/comfyui';
 
 // Renderer側で使用可能なAPI定義
@@ -76,6 +77,18 @@ const electronAPI = {
     // ComfyUI の画面を既定ブラウザで開く（開く先は main 側が設定から決める）
     openUI: (): Promise<{ success: boolean; url?: string; error?: string }> =>
       ipcRenderer.invoke('open-comfyui-ui'),
+    /**
+     * ComfyUI を起動する。**叩くパスは渡さない**（main 側が config.json の
+     * comfyui...paths.startBat だけを叩く）。PowerShell の窓は開いたままにする
+     * ので、モデル読み込みの進みと失敗の理由はその窓で読める。
+     * すでに応答していた場合は起動せず alreadyRunning で返る。
+     */
+    launch: (): Promise<ComfyUILaunchResult> => ipcRenderer.invoke('comfyui-launch'),
+    /** ComfyUI の input / output をエクスプローラーで開く（この2箇所だけ） */
+    openFolder: (
+      which: 'input' | 'output'
+    ): Promise<{ success: boolean; path?: string; error?: string }> =>
+      ipcRenderer.invoke('comfyui-open-folder', which),
     // 現在の設定を焼き込んだワークフローを書き出し、エクスプローラで場所を開く。
     // ブラウザの ComfyUI へこのファイルをドラッグ＆ドロップすると、
     // ゲームが投げているのと同じグラフが開く

@@ -1,4 +1,5 @@
 import type { GenerationParams } from '../config/generation-params';
+import type { ComfyUIPathsConfig } from './comfyui';
 
 // ゲーム画面状態の型定義
 export type GameScreen = 'TOP' | 'CAMERA' | 'COUNTDOWN' | 'GAME' | 'RESULT' | 'TEST';
@@ -69,6 +70,12 @@ export interface AppConfig {
        * 同名の値を上書きする。テスト・設定画面から編集して保存できる。
        */
       generation?: GenerationParams;
+      /**
+       * この ComfyUI が置かれている物理絶対パス。**同一PCで動かしているときだけ書く**
+       * （AI サーバー側は別の機体なので書かない）。起動バッチの実行と
+       * input / output を開く用。詳細は services/comfyui-config.ts の ComfyUIPaths。
+       */
+      paths?: ComfyUIPathsConfig;
     }>;
     outputPrefix?: string;
     baseUrl?: string;
@@ -89,6 +96,8 @@ export interface AppConfig {
     };
     /** 全プロファイル共通の生成パラメータ既定値 */
     generation?: GenerationParams;
+    /** 全プロファイル共通の物理パス既定値。プロファイル側の paths で丸ごと差し替わる */
+    paths?: ComfyUIPathsConfig;
   };
   camera?: {
     width: number;
@@ -141,6 +150,8 @@ export interface IPCMessage {
 
 // ComfyUI関連の型定義をre-export
 export type {
+  ComfyUIPathsConfig,
+  ComfyUILaunchResult,
   ComfyUIJobProgressData,
   ComfyUIStatus,
   ComfyUIActiveJob,

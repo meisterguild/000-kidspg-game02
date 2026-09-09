@@ -175,6 +175,9 @@ npm ci
 #    別ウィンドウで実行し、起動しっぱなしにする
 C:\WORK\AI\ComfyUI_20260902_0.34.0\ComfyUI\start-comfyui.bat
 
+#    アプリの「テスト・設定」ページの［ComfyUI を起動する］でも同じことができます
+#    （設定の「ComfyUI の場所（物理パス）」を参照）
+
 #    起動完了の確認（JSON が返れば OK。初回は数分かかります）
 curl http://127.0.0.1:8188/system_stats
 
@@ -301,6 +304,46 @@ node --test tools/test-workflow-template.cjs tools/test-magick-script.cjs
   増やしても速くならずキューに積まれるだけです
 
 **AI変換を当日オフにする**には `comfyui` セクションごと外してアプリを再起動します。
+
+### ComfyUI の場所（物理パス）
+
+**同一PCで ComfyUI を動かしているプロファイルにだけ** `paths` を書きます。
+アプリと ComfyUI のやり取りは `baseUrl`（HTTP）で足りていて、ここは
+**アプリから ComfyUI を起こす**ためと、当日 input / output を目で確かめるためだけに使います。
+
+```json
+"local": {
+  "baseUrl": "http://127.0.0.1:8188",
+  "paths": {
+    "root":     "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI",
+    "input":    "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\input",
+    "output":   "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\output",
+    "startBat": "start-comfyui.bat"
+  }
+}
+```
+
+- `root` は**絶対パス必須**。相対で書くと Electron の作業フォルダを基準に解決されて
+  見当違いの場所を掘るので、**使わずに起動時の警告へ回します**
+- `input` / `output` / `startBat` は省略か `root` からの相対でよい。省略すると
+  `root\input` / `root\output` / （起動ボタンなし）になります。
+  **ComfyUI を新しい版へ差し替えたときは `root` の1行だけ直せば足ります**
+- `server` プロファイルには**書きません**。別の機体なので、この PC からは起動もフォルダも開けません
+- プロファイル側に `paths` があれば、共通側とは**混ぜず丸ごとそちらを使います**。
+  `root` だけ差し替えて `input` を共通側から拾うと、別の版フォルダの input を見にいく
+  組み合わせができてしまうためです
+
+テスト・設定ページに次のボタンが出ます。
+
+| ボタン | すること |
+|---|---|
+| ［ComfyUI を起動する］ | `startBat` を **開いたままの PowerShell ウィンドウ**で実行する。すでに応答していれば起動しない |
+| ［input を開く］ / ［output を開く］ | そのフォルダをエクスプローラーで開く |
+
+**PowerShell の窓は意図的に閉じません**（`-NoExit`）。ComfyUI はモデルの読み込みに
+数十秒かかり、失敗したときの理由もその窓の中にしか出ません。当日スタッフはログファイルを
+開けないので、画面に残っているのが唯一の手がかりになります。ComfyUI を止めるのも
+その窓を閉じる操作です。アプリを終了しても ComfyUI は動き続けます（逆も同じ）。
 
 ### 1枚あたりの生成時間と、間に合わないときの退避
 
@@ -506,6 +549,7 @@ kidspg-game-2026/
 | `test-retry-failed.cjs` | 救済ツール・救済スクリプトの単体テスト（保守ロックの取り合いを含む） |
 | `test-config-writer.cjs` | 設定の書き戻し（型・範囲の検査）の単体テスト |
 | `test-purge-photos.cjs` | 写真削除ツールの単体テスト（隔離したフォルダで確認） |
+| `test-comfyui-paths.cjs` | ComfyUI の物理パスの解決と、起動コマンドの単体テスト |
 | `test-regen-bat.cjs` | 再生成バッチの単体テスト（CRLF・ASCII 先頭・委譲） |
 | `test-rank-and-level.cjs` | ランクとレベルの計算の単体テスト |
 | `test-solve-stage.mjs` | 難易度ソルバの単体テスト（正解が自明な小グラフ） |
