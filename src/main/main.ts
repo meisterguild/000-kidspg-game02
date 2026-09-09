@@ -278,6 +278,14 @@ class ElectronApp {
       if (this.mainWindow) {
         if (this.mainWindow.isMinimized()) this.mainWindow.restore();
         this.mainWindow.focus();
+        // 🔴 **renderer へ「もう一度報告して」を投げる。**
+        // 起動バッチは起こす前に logs/ready.json を消し、そのあと現れるのを待つ。
+        // 報告が初回1回だけだと、すでに生きている場合に**二度と書かれず必ず
+        // 時間切れ**になる。そのため以前は「生きているときは印を消さない」形に
+        // していたが、それだと**何時間前の印でも準備完了と読んでしまう**
+        // （敵対的レビュー 2026-09-09 の指摘）。ここで測り直させることで、
+        // 「消してから待つ」を常に成り立たせる。
+        this.mainWindow.webContents.send('request-ready-report');
       }
     });
 

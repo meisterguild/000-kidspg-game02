@@ -21,6 +21,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const MODULE_PATH = path.join(ROOT, 'dist', 'main', 'main', 'services', 'readiness.js');
@@ -148,27 +149,56 @@ test('results に書けるかは、実際に書いて確かめる（書き跡を
 
 const startBat = () => fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf8');
 
-test('起動バッチは、アプリを起こす直前に古い印を消す', () => {
+test('起動バッチは古い印を消し、**消せたことを確かめる**', () => {
   const raw = startBat();
-  // 🔴 前回の印が残っていると、今回起動に失敗しても即座に準備完了と出る
-  assert.match(raw, /del \/f \/q "!READY_FILE!"/, '古い印を消していません');
-  const delAt = raw.indexOf('del /f /q "!READY_FILE!"');
-  // 比較の相手は**アプリの**起動。`call :launch_detached` は ComfyUI の起動
-  // （[4/7]）でも使われているので、そちらと比べても意味がない。
-  const stepAt = raw.indexOf('[6/7] アプリの起動');
-  const appLaunchAt = raw.indexOf('set "LD_PATHARG=%~dp0."');
-  assert.ok(stepAt > 0 && appLaunchAt > 0);
-  assert.ok(delAt > stepAt, '消すのがアプリ起動の段より前になっています');
-  assert.ok(delAt < appLaunchAt, '消すのがアプリを起こしたより後になっています');
+  // 🔴 前回の印が残っていると、今回起動に失敗しても待ち時間ゼロで
+  // 「準備完了」と出る（当日いちばん危ない壊れ方）。
+  // 以前は del の結果を > nul で潰し、消せたかを見ていなかった
+  // （敵対的レビュー 2026-09-09 の指摘）。
+  assert.match(raw, /^:clear_ready/m, ':clear_ready がありません');
+  const routine = raw.slice(raw.indexOf(':clear_ready'));
+  const delAt = routine.indexOf('del /f /q "!READY_FILE!"');
+  assert.ok(delAt > 0, '消していません');
+  // del のあとに存在を確かめ、失敗を呼び出し側へ伝えること
+  const checkAt = routine.indexOf('if not exist "!READY_FILE!" exit /b 0', delAt);
+  assert.ok(checkAt > delAt, 'del のあとに消せたかを確かめていません');
+  assert.match(routine, /READY_CLEAR_FAILED=1/, '失敗を呼び出し側へ伝えていません');
 });
 
-test('起動バッチは、すでに生きている場合は印を消さない', () => {
+test('消せなかったら起動しない（「準備完了」と言わせない）', () => {
   const raw = startBat();
-  // 消すと、アプリは報告済みなので二度と書かれず、準備確認が必ず時間切れになる
+  const callAt = raw.indexOf('call :clear_ready');
+  assert.ok(callAt > 0, ':clear_ready を呼んでいません');
+  const after = raw.slice(callAt, callAt + 400);
+  assert.match(after, /if defined READY_CLEAR_FAILED/, '失敗を見ていません');
+  assert.match(after, /STOP_BEFORE_LAUNCH=1/, '中止の印を立てていません');
+  // アプリを起こすより前に呼ぶこと
+  const appLaunchAt = raw.indexOf('set "LD_PATHARG=%~dp0."');
+  assert.ok(appLaunchAt > callAt, 'アプリを起こしたあとに消しています');
+});
+
+test('すでに生きている場合も印を消して測り直させる', () => {
+  const raw = startBat();
+  // 以前は「生きているときは消さない」形だった。報告が1回だけなので消すと
+  // 必ず時間切れになるためだが、そのぶん**何時間前の印でも準備完了と読んでいた**
+  // （敵対的レビュー 2026-09-09 の指摘）。
+  // main が second-instance で再報告を依頼するようにしたので、常に消せる。
+  const callAt = raw.indexOf('call :clear_ready');
   const alreadyAt = raw.indexOf('if defined ALREADY_LIVE');
-  const delAt = raw.indexOf('del /f /q "!READY_FILE!"');
-  assert.ok(alreadyAt > 0);
-  assert.ok(delAt > alreadyAt, 'すでに生きている分岐より前で消しています');
+  assert.ok(callAt > 0 && alreadyAt > 0);
+  assert.ok(callAt < alreadyAt, 'すでに生きている分岐より後で消しています');
+  const main = fs.readFileSync(path.join(ROOT, 'src/main/main.ts'), 'utf8');
+  assert.match(main, /request-ready-report/, 'main が再報告を依頼していません');
+  const hook = fs.readFileSync(path.join(ROOT, 'src/renderer/hooks/useReportReady.ts'), 'utf8');
+  assert.match(hook, /onRequestReadyReport/, 'renderer が再報告の依頼を受けていません');
+});
+
+test('判定がいつのものかを表示する', () => {
+  const raw = startBat();
+  // 判定は「その瞬間のスナップショット」で、報告後に ComfyUI が落ちても
+  // 印は変わらない。時刻が出ていれば「さっきの話か」と判断できる
+  assert.match(raw, /RAT=/, '判定時刻を読んでいません');
+  assert.match(raw, /判定時刻 !RAT!/, '判定時刻を表示していません');
 });
 
 test('起動バッチは印を待ち、出なければ準備できていないと言う', () => {
@@ -179,14 +209,77 @@ test('起動バッチは印を待ち、出なければ準備できていない�
   assert.match(raw, /準備完了/);
 });
 
-test('中止した場合は「準備完了」と言わない', () => {
+test('中止の印を立てたら、必ずまとめへ飛ぶ', () => {
   const raw = startBat();
-  // 中止経路（アプリが起きていない）には必ず印を立てる。
-  // これが無いと、起動していないのに WARN の件数だけで「準備完了」と出る
-  const stops = (raw.match(/set "STOP_BEFORE_LAUNCH=1"/g) || []).length;
-  assert.strictEqual(stops, 3, '中止経路 3 件すべてに印が立っていません');
+  // ⚠️ **件数を固定してはいけない。** 以前は「ちょうど3件」を見ていたので、
+  // 正当な中止経路を足すとテストが落ち、次の人は数字を書き換えるだけで済み、
+  // 「印を立てたのに goto を忘れた」は誰も見ていなかった
+  // （敵対的レビュー 2026-09-09 の指摘）。立てた各所が中止へ行くかを見る。
+  const lines = raw.split(/\r?\n/);
+  const marks = [];
+  lines.forEach((line, i) => {
+    if (line.includes('set "STOP_BEFORE_LAUNCH=1"')) marks.push(i);
+  });
+  assert.ok(marks.length >= 3, '中止経路が想定より少ないです: ' + marks.length);
+  for (const i of marks) {
+    // 印の直後（数行以内）に :summary へ飛ぶこと。
+    // ただし :clear_ready のように「呼び出し側で中止する」形もあるので、
+    // exit /b（サブルーチンからの復帰）も認める
+    const near = lines.slice(i, i + 4).join('\n');
+    assert.match(
+      near,
+      /goto :summary|exit \/b/,
+      (i + 1) + ' 行目で印を立てたあと、まとめへ行く経路がありません'
+    );
+  }
   assert.match(raw, /if defined STOP_BEFORE_LAUNCH goto :sum_stopped/);
   assert.match(raw, /アプリは起動していません/);
+});
+
+/**
+ * 🔴 **バッチを実際に動かす唯一のテスト。**
+ *
+ * これまでのテストはすべてソースを文字列として grep するだけだったので、
+ * 変数展開の事故（`set /a WARN+=` の `Missing operand.`）・ラベルの取り違え・
+ * 文字化けを1つも捕まえられなかった（敵対的レビュー 2026-09-09 の指摘）。
+ * `/dryrun` は**何も起動しない**ので、テストから安全に通せる。
+ */
+test('/dryrun が最後まで通り、英語のエラーや文字化けを出さない', (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows 以外では cmd を動かせません');
+    return;
+  }
+  // 絶対パスで渡す。カレント頼みだと環境によって
+  // 「内部コマンドまたは外部コマンドとして認識されていません」になる（実測）
+  const out = spawnSync('cmd', ['/c', path.join(ROOT, 'start-kidspg.bat'), '/dryrun'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 120000,
+    input: '',
+  });
+  const text = (out.stdout || '') + (out.stderr || '');
+  assert.ok(text.length > 0, 'バッチが何も出力しませんでした');
+
+  // 7段すべてを通ること（ラベルの取り違えで飛ばされていないか）
+  for (let i = 1; i <= 7; i++) {
+    assert.ok(text.includes('[' + i + '/7]'), '[' + i + '/7] が出ていません');
+  }
+  // 何らかの結論を出して終わること
+  assert.match(text, /点検 :|準備完了|準備できていません/, 'まとめが出ていません');
+
+  // cmd / PowerShell の事故を示す文字列が出ていないこと
+  for (const bad of [
+    'Missing operand',
+    'is not recognized',
+    'was unexpected at this time',
+    'The syntax of the command is incorrect',
+    'Unexpected token',
+  ]) {
+    assert.ok(!text.includes(bad), 'バッチが壊れています: ' + bad);
+  }
+  // 文字化けの目印（CP932 誤読で出る典型）
+  assert.ok(!text.includes('繧'), '文字化けしています（UTF-8 の誤読）');
 });
 
 test('まとめの分岐に else if を使わない（cmd では黙って外れることがある）', () => {

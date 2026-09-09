@@ -94,11 +94,11 @@ if "!SAC!"=="1" (
   echo        [注意] Smart App Control が有効です。
   echo               この起動方法（Electron 本体で dist を読む）は、SAC が有効なままでも
   echo               実績があります。まずはそのまま進めてください。
-  echo               ＊ もしアプリが起動せず何も出ない場合は、SAC が弾いています。
+  echo               ＊ アプリや ComfyUI が起動しない場合は SAC が弾いています。
+  echo                  対処は **オフにすることではなく**、ネットに繋いで
+  echo                  ウォームアップ.bat を通し、SAC に判定を取らせることです
+  echo                  （判定が返るまでの間だけ止めているため。詳細は当日手順書）。
   echo                  ブロックされた記録: イベントビューアー ^> Microsoft-Windows-CodeIntegrity/Operational
-  echo                  その場合の確実な対処は SAC をオフにすること
-  echo                  （Windows セキュリティ ^> アプリとブラウザーの制御 ^> スマート アプリ コントロール）。
-  echo                  ※一度オフにすると、Windows を入れ直すまで戻せません。
   set /a WARN+=1
 ) else (
   echo        OK : Smart App Control はアプリの起動を止めません
@@ -154,6 +154,12 @@ if /i "%KIDSPG_MODE%"=="electron" set "LAUNCH_MODE=electron"
 if /i "%KIDSPG_MODE%"=="exe" set "LAUNCH_MODE=exe"
 if not defined LAUNCH_MODE set "LAUNCH_MODE=electron"
 
+rem 🔴 **印の置き場所はアプリが決める。** アプリは
+rem getBundleRoot()（= パッケージ版なら exe の隣、そうでなければアプリのフォルダ）
+rem の logs\ready.json に書く。exe モードのときバッチが %~dp0logs を見ていると、
+rem アプリが完璧に立ち上がっても印は永久に見つからない
+rem （敵対的レビュー 2026-09-09 の指摘）。モードに合わせて見る場所を変える。
+
 set "ELECTRON_EXE=%~dp0node_modules\electron\dist\electron.exe"
 if "!LAUNCH_MODE!"=="electron" goto :check_electron
 
@@ -185,7 +191,12 @@ for %%F in ("%APP_EXE%") do (
   set "APP_NAME=%%~nxF"
   echo        本体      : %%~fF
   echo        ビルド日時 : %%~tF
+  rem 🔴 印は**アプリが書く場所**を見る。パッケージ版は exe の隣（getBundleRoot）。
+  rem ここを合わせないと、アプリが立ち上がっても印が永久に見つからず、
+  rem 90秒待って「準備できていません」になる（敵対的レビュー 2026-09-09 の指摘）。
+  set "READY_FILE=%%~dpFlogs\ready.json"
 )
+echo        印の場所  : !READY_FILE!
 
 rem --- 設定ファイルがパッケージ版と食い違っていないか
 if exist "%~dp0release\win-unpacked\config.json" (
@@ -310,6 +321,13 @@ rem 代わりに出力はログへ落として、後から見られるように�
 if not exist "%~dp0logs" mkdir "%~dp0logs"
 echo        ComfyUI を起動します（CPU実行・画面は出ません）
 echo        ログ : %~dp0logs\comfyui.log
+rem ComfyUI へ渡す環境変数。**ここが唯一効く場所**（上の LD_ENV の説明）。
+rem  ・OMP_NUM_THREADS … CPU 実行は全論理コアを食い尽くし、同じPCで動く
+rem    ゲーム（Electron + WebGL）がカクついて操作不能になるため絞る
+rem  ・HF_* / TORCH_HOME / XDG_CACHE_HOME … 既定では %USERPROFILE%.cache へ
+rem    出てしまう。当日PCは1フォルダで完結させる方針なので中へ向ける
+rem  ・*_OFFLINE … 当日はオフライン。外へ探しに行って待たされるのを防ぐ
+set "LD_ENV=set OMP_NUM_THREADS=6&& set HF_HOME=%~dp0..<BS>ai<BS>cache<BS>huggingface&& set HF_HUB_CACHE=%~dp0..<BS>ai<BS>cache<BS>huggingface<BS>hub&& set TORCH_HOME=%~dp0..<BS>ai<BS>cache<BS>torch&& set XDG_CACHE_HOME=%~dp0..<BS>ai<BS>cache&& set HF_HUB_OFFLINE=1&& set TRANSFORMERS_OFFLINE=1"
 set "LD_EXE=!COMFY_PY!"
 set "LD_RAWARGS=main.py --cpu --listen 127.0.0.1 --port %COMFY_PORT% --disable-auto-launch"
 set "LD_PATHARG="
@@ -319,6 +337,7 @@ set "LD_HIDE=1"
 call :launch_detached
 set "LD_HIDE="
 set "LD_LOG="
+set "LD_ENV="
 if not "!LD_RC!"=="0" (
   echo        [警告] ComfyUI を起動できませんでした（コード !LD_RC!）
   set /a WARN+=1
@@ -362,10 +381,14 @@ rem    生きている … ウィンドウがある。起こすと既存の画�
 rem    ゾンビ     … ウィンドウが無いのにプロセスだけ residual。
 rem                 ロックを握ったままなので、片付けないと二度と起動できない
 rem ------------------------------------------------------------
-for %%I in ("%~dp0.") do set "PROJ=%%~nxI"
+rem 自分のインスタンスの見分け方。
+rem 🔴 **フォルダ名では絞りが甘い。** 当日の置き場所は C:\kidspg\app なので
+rem フォルダ名は "app" になり、'*app*' は無関係な electron.exe にも当たる。
+rem 当たると「すでに生きている」と誤判定し、アプリを起こさずに準備完了と
+rem 出しうる（敵対的レビュー 2026-09-09 の指摘）。フルパスで照合する。
+for %%I in ("%~dp0.") do set "APPDIR=%%~fI"
 if "!LAUNCH_MODE!"=="electron" (
-  rem electron.exe は他の用途でも動きうるので、このフォルダを読んでいる親だけを見る
-  set "INST_FILTER=$_.Name -eq 'electron.exe' -and $_.CommandLine -like '*!PROJ!*' -and $_.CommandLine -notlike '*--type=*'"
+  set "INST_FILTER=$_.Name -eq 'electron.exe' -and $_.CommandLine -like '*!APPDIR!*' -and $_.CommandLine -notlike '*--type=*'"
 ) else (
   rem 子プロセス（gpu-process / renderer / utility）は同じ exe なので必ず除く。
   rem 除かないと、生きているアプリの子が「ウィンドウ無し」＝ゾンビと判定されて殺される。
@@ -413,9 +436,19 @@ if defined DRYRUN (
   echo        ＊ 確認のみモードなので起動しません
   goto :launch_done
 )
+call :clear_ready
+if defined READY_CLEAR_FAILED (
+  set /a WARN+=1
+  set "STOP_BEFORE_LAUNCH=1"
+  goto :summary
+)
 if defined ALREADY_LIVE (
   rem すでに生きているので、起こしても main.ts の second-instance が
   rem 既存ウィンドウを前に出して終わる。それを狙って呼ぶ（新しい窓は開かない）。
+  rem そのとき main は renderer へ「もう一度報告して」を投げるので、
+  rem **消した印は測り直して書かれる**。以前はここで消さない作りだったため、
+  rem 何時間前の印でも「準備完了」と読んでしまっていた
+  rem （敵対的レビュー 2026-09-09 の指摘）。
   if "!LAUNCH_MODE!"=="electron" (
     start "" /b "!ELECTRON_EXE!" "%~dp0."
   ) else (
@@ -424,10 +457,7 @@ if defined ALREADY_LIVE (
   echo        すでに起動していた画面を前に出しました（新しくは開いていません）
   goto :launch_done
 )
-rem 🔴 **新しく起こすときだけ古い印を消す。**
-rem すでに生きている場合（上の分岐）に消してしまうと、アプリは報告済みなので
-rem 二度と書かれず、準備確認が必ず時間切れになる。
-if exist "!READY_FILE!" del /f /q "!READY_FILE!" > nul 2>&1
+rem （古い印は :clear_ready で消してある）
 (
   if "!LAUNCH_MODE!"=="electron" (
     set "LD_EXE=!ELECTRON_EXE!"
@@ -496,18 +526,28 @@ goto :wait_ready
 echo.
 set "RCOUNT="
 set "RWARNS="
-for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "try{ $r=(Get-Content -Raw -Encoding UTF8 '!READY_FILE!' | ConvertFrom-Json); 'RCOUNT=' + @($r.warnings).Count; 'RSCREEN=' + $r.screen; foreach($w in @($r.warnings)){ 'RWARN=' + $w } }catch{ 'RCOUNT=-1' }"`) do (
+rem 🔴 **いつの印かを必ず出す。** 判定は「その瞬間のスナップショット」で、
+rem 報告後に ComfyUI が落ちたりカメラが抜かれたりしても印は変わらない。
+rem 時刻が出ていれば、スタッフが「さっきの話か」と判断できる
+rem （敵対的レビュー 2026-09-09 の指摘）。
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "try{ $r=(Get-Content -Raw -Encoding UTF8 '!READY_FILE!' | ConvertFrom-Json); 'RCOUNT=' + @($r.warnings).Count; 'RSCREEN=' + $r.screen; 'RAT=' + ([datetime]$r.readyAt).ToLocalTime().ToString('HH:mm:ss'); foreach($w in @($r.warnings)){ 'RWARN=' + $w } }catch{ 'RCOUNT=-1' }"`) do (
   if /i "%%A"=="RCOUNT" set "RCOUNT=%%B"
   if /i "%%A"=="RSCREEN" set "RSCREEN=%%B"
+  if /i "%%A"=="RAT" set "RAT=%%B"
   if /i "%%A"=="RWARN" echo        [警告] %%B
 )
+rem PowerShell が動かない・出力が1行も返らない場合、RCOUNT は空のままになる。
+rem そのまま進むと「OK : ゲーム画面が出ました」と「準備できていません」が同時に出て、
+rem さらに set /a が Missing operand で英語のエラーを吐く
+rem （敵対的レビュー 2026-09-09 の指摘）。読めなかった扱いへ寄せる。
+if not defined RCOUNT set "RCOUNT=-1"
 if "!RCOUNT!"=="-1" (
   echo        [警告] 準備完了の報告を読めませんでした（logs\ready.json が壊れている）。
   set /a WARN+=1
   set "READY_NG=1"
   goto :ready_done
 )
-echo        OK : ゲーム画面が出ました（表示中: !RSCREEN!）
+echo        OK : ゲーム画面が出ました（表示中: !RSCREEN! ／ 判定時刻 !RAT!）
 if not "!RCOUNT!"=="0" (
   rem 起動はできたが当日困ることがある（カメラ無し・ComfyUI 落ち・results に書けない）。
   rem これを黙って通すと、全員ダミー写真のまま開場することになる
@@ -583,7 +623,12 @@ rem     解釈がややこしく壊れやすいため、変数には素のパス
 rem ------------------------------------------------------------
 :launch_detached
 set "LD_RC=9"
-for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "$q=[char]34; $exe='!LD_EXE!'; $raw='!LD_RAWARGS!'; $log='!LD_LOG!'; if($log){ $inner=$q+$exe+$q; if($raw){$inner+=' '+$raw}; $inner+=' >> '+$q+$log+$q+' 2>&1'; $cl='cmd.exe /c '+$q+$inner+$q } else { $cl=$q+$exe+$q; if($raw){$cl+=' '+$raw}; if('!LD_PATHARG!'){ $cl+=' '+$q+'!LD_PATHARG!'+$q } }; $args=@{CommandLine=$cl; CurrentDirectory='!LD_CWD!'}; if('!LD_HIDE!'){ $args['ProcessStartupInformation']=[CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}) }; try{ (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $args -ErrorAction Stop).ReturnValue }catch{ 9 }"`) do set "LD_RC=%%A"
+rem LD_ENV: cmd.exe /c 経由で起こすときに前置きする set 文（"set A=1&& set B=2" の形）。
+rem Win32_Process.Create は**呼び出し元の環境を受け継がない**ので、
+rem バッチ側で set しただけでは子に届かない。コマンド行に載せる必要がある
+rem （敵対的レビュー 2026-09-09 の指摘。ComfyUI の OMP_NUM_THREADS と
+rem  キャッシュの向き先が、どちらも効いていなかった）。
+for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "$q=[char]34; $exe='!LD_EXE!'; $raw='!LD_RAWARGS!'; $log='!LD_LOG!'; $pre='!LD_ENV!'; if($log){ $inner=$q+$exe+$q; if($raw){$inner+=' '+$raw}; $inner+=' >> '+$q+$log+$q+' 2>&1'; if($pre){$inner=$pre+' && '+$inner}; $cl='cmd.exe /c '+$q+$inner+$q } else { $cl=$q+$exe+$q; if($raw){$cl+=' '+$raw}; if('!LD_PATHARG!'){ $cl+=' '+$q+'!LD_PATHARG!'+$q } }; $args=@{CommandLine=$cl; CurrentDirectory='!LD_CWD!'}; if('!LD_HIDE!'){ $args['ProcessStartupInformation']=[CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}) }; try{ (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $args -ErrorAction Stop).ReturnValue }catch{ 9 }"`) do set "LD_RC=%%A"
 exit /b 0
 
 rem ------------------------------------------------------------
@@ -610,6 +655,31 @@ for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "$
 )
 if not defined LIVE_COUNT set "LIVE_COUNT=0"
 if not defined ZOMBIE_COUNT set "ZOMBIE_COUNT=0"
+exit /b 0
+
+rem ------------------------------------------------------------
+rem  古い「準備OK」の印を消す。**消せたことを確かめる。**
+rem
+rem  🔴 消せないまま進むと、起動に失敗しても [7/7] が古い印を待ち時間ゼロで
+rem  読み、「★★★ 準備完了 ★★★」を出す。モニタが真っ暗なのに「速くて調子がいい」
+rem  ように見える——当日いちばん危ない壊れ方（敵対的レビュー 2026-09-09 の指摘）。
+rem  以前は del の結果を > nul で潰して確認していなかった。
+rem  アプリ側（readiness.ts の clearReadiness）も同じ unlink なので、
+rem  ロック・属性・ACL のどれか1つで**両方が同時に失敗する**。独立した防御に
+rem  なっていないので、ここで必ず確かめて止める。
+rem ------------------------------------------------------------
+:clear_ready
+set "READY_CLEAR_FAILED="
+if not exist "!READY_FILE!" exit /b 0
+del /f /q "!READY_FILE!" > nul 2>&1
+if not exist "!READY_FILE!" exit /b 0
+echo        [中止] 前回の「準備OK」の印を消せません:
+echo               !READY_FILE!
+echo               このまま進むと、起動に失敗しても古い印を読んで
+echo               「準備完了」と表示してしまいます。
+echo               読み取り専用属性・前のプロセスが握っている・同期ソフトの
+echo               ロックを確認し、stop-kidspg.bat を実行してからやり直してください。
+set "READY_CLEAR_FAILED=1"
 exit /b 0
 
 rem ------------------------------------------------------------

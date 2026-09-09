@@ -120,10 +120,19 @@ export const buildReadinessWarnings = (
     );
   }
   if (!report.cameraReady) {
-    warnings.push('カメラの初期化が終わっていません');
+    // 対処を書かないと当日詰まる。起動バッチの時間切れ側には書いてあるのに
+    // 印が書けたときのほうが情報が少ない、という逆転が起きていた
+    // （敵対的レビュー 2026-09-09 の指摘）
+    warnings.push(
+      'カメラの初期化が終わっていません。カメラを抜き差しし、' +
+        'Windows の設定 > プライバシー > カメラ を確認してからアプリを再起動してください'
+    );
   }
   if (!report.assetsLoaded) {
-    warnings.push('背景アセットの読み込みが終わっていません');
+    warnings.push(
+      '背景アセットを読み込めていません（画面の背景やカードの素材が欠けている可能性）。' +
+        'コピーが不完全かもしれません'
+    );
   }
   if (report.comfyui && !report.comfyui.healthy) {
     warnings.push(

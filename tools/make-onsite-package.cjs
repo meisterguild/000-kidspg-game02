@@ -330,6 +330,15 @@ copyTree(path.join(ROOT, 'tools'), path.join(opsDir, 'tools'), {
   filter: (src) => !path.basename(src).startsWith('test-'),
 });
 copyTree(path.join(ROOT, 'dist/main'), path.join(opsDir, 'dist/main'));
+// 🔴 **assets を必ず積む。** comfyui-smoke.cjs は
+//   ・ワークフロー: config.json の templatePath（= assets/ComfyUI_KidsPG_2026_local.json）
+//   ・写真        : assets/dummy_photo.png
+// を ops のルート基準で探す。これが無いと smoke は「写真がありません」で即終了し、
+// **暖機の「1枚生成」が構造的に必ず失敗する**。しかも warmup.bat は
+// ブロック 0 件を見て「暖機できました」と出すため、
+// **暖機という仕組み全体が機能しないまま成功と表示される**
+// （敵対的レビュー 2026-09-09 の指摘。出来上がったパッケージで再現を確認した）。
+copyTree(path.join(ROOT, 'assets'), path.join(opsDir, 'assets'));
 copyFile(path.join(ROOT, 'config.json'), path.join(opsDir, 'config.json'));
 fs.writeFileSync(
   path.join(opsDir, 'package.json'),
@@ -490,7 +499,11 @@ if (!APP_ONLY) {
     'echo [%date% %time%] starting: %COMFY_ARGS% >> "logs\\supervisor.log"',
     '"%COMFY_PY%" main.py %COMFY_ARGS% >> "logs\\comfyui.log" 2>&1',
     'echo [%date% %time%] exited with %ERRORLEVEL% - restarting in 5s >> "logs\\supervisor.log"',
-    'timeout /t 5 /nobreak > nul',
+    'REM 🔴 timeout は stdin が無いと即エラーで抜ける',
+    'REM    （"ERROR: Input redirection is not supported" / 終了コード 1）。',
+    'REM    アプリ経由でこのバッチを起こすと stdio は NUL なので、待ちが消えて',
+    'REM    1秒に何百回もループし、ログでディスクを埋める。ping で待つ。',
+    'ping -n 6 127.0.0.1 > nul',
     'goto loop',
     '',
   ].join('\r\n');

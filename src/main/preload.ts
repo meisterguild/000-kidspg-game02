@@ -160,6 +160,17 @@ const electronAPI = {
     screen: string;
   }): Promise<{ success: boolean; warnings?: string[]; error?: string }> =>
     ipcRenderer.invoke('app-ready', info),
+  /**
+   * main から「準備状況をもう一度報告して」と言われたときに呼ばれる。
+   * 起動バッチが2本目を起こしたときに飛んでくる（詳細は main の second-instance）。
+   */
+  onRequestReadyReport: (callback: () => void) => {
+    ipcRenderer.on('request-ready-report', () => callback());
+  },
+  removeRequestReadyReportListener: () => {
+    ipcRenderer.removeAllListeners('request-ready-report');
+  },
+
   confirmExit: (confirmed: boolean) => ipcRenderer.invoke('confirm-exit', confirmed),
   onShowExitConfirmation: (callback: (comfyUIStatus: ComfyUIStatus) => void) => {
     ipcRenderer.on('show-exit-confirmation', (_, data) => callback(data));
