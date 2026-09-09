@@ -67,11 +67,23 @@ USB のルート
 C:\kidspg\
 ├── app\        アプリ本体（start-kidspg.bat / config.json / dist / node_modules）
 │   ├── results\   ← 当日の成果物。**バックアップするのはここだけ**
-│   └── logs\      ← ComfyUI のログ
+│   ├── logs\      ← ComfyUI のログと ready.json（準備OKの印）
+│   ├── appdata\   ← Electron の実行時データ（初回起動時にできる）
+│   └── tmp\       ← ImageMagick とワークフロー書き出しの一時ファイル
 ├── ai\         ComfyUI + 埋め込み Python + モデル4本
-├── bin\        ImageMagick（携帯版）
+│   └── cache\     ← Python ライブラリのキャッシュ（必要になればできる）
+├── bin\        ImageMagick
 └── ops\        当日の救済ツール（Node 携帯版 + tools）
 ```
+
+> 🔴 **このフォルダの中だけで完結します。** ComfyUI もアプリ本体も、当日できた
+> データも、すべて `C:\kidspg` の中です。**片付けはこのフォルダを消すだけ、
+> 持ち帰りは丸ごとコピーするだけ**で済みます。
+> `%APPDATA%` や `%TEMP%` には何も残しません（2026-09-09 に実測で確認）。
+>
+> ⚠️ ただし **`app\appdata\` を消さないでください。** カメラ権限の許可状態が
+> ここに入っており、消すと当日また確認が出ることがあります。
+> 片付けで消すのは写真だけ（`ops` の `purge-photos.cjs`）にしてください。
 
 ---
 

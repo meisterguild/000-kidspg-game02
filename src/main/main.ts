@@ -228,7 +228,44 @@ class ElectronApp {
     }
   }
 
+  /**
+   * Electron が勝手に外へ書くものを、すべてアプリのフォルダ配下へ寄せる。
+   *
+   * ■ なぜ
+   * 当日PCは「1つのフォルダで完結」させる方針（2026-09-09 判断）。
+   * ComfyUI もアプリ本体も、当日できたデータも C:\kidspg の中だけで済ませたい。
+   * 片付けはフォルダを消すだけ、持ち帰りはフォルダを丸ごとコピーするだけ、
+   * にしたいため。
+   *
+   * ■ 何が外に出ていたか（実測 2026-09-09）
+   * 既定では %APPDATA%\<アプリ名> に Chromium の Cache / GPUCache /
+   * Local Storage / Network / Preferences などが作られる。開発機では
+   * %APPDATA%\kidspg-game-2026 に **6.8MB** 溜まっていた。
+   * ここにはカメラ権限の許可状態も入るので、消すと当日また確認が出うる。
+   *
+   * 🔴 **app が ready になる前に呼ぶこと。** ready のあとで userData を
+   * 動かしても、すでに開いた既定の場所が使われ続ける。
+   */
+  private redirectAppDataIntoAppFolder(): void {
+    try {
+      const root = path.join(this.getBundleRoot(), 'appdata');
+      // userData を動かせば配下も付いてくるが、明示しておく
+      // （Electron の版で既定の位置が変わっても外へ出ないように）。
+      app.setPath('userData', path.join(root, 'userData'));
+      app.setPath('sessionData', path.join(root, 'sessionData'));
+      app.setPath('crashDumps', path.join(root, 'crashDumps'));
+      app.setPath('logs', path.join(root, 'logs'));
+      console.log('[配置] Electron のデータ置き場:', root);
+    } catch (error) {
+      // ここで失敗しても動く（既定の場所が使われるだけ）。当日を止めるほどではない
+      console.warn('[配置] Electron のデータ置き場を変えられませんでした:', error);
+    }
+  }
+
   private initializeApp(): void {
+    // 🔴 ready より前にやる。フォルダ完結のため（理由は上のメソッド）
+    this.redirectAppDataIntoAppFolder();
+
     // 二重起動を防ぐ。ResultsManager の直列化はプロセス内にしか効かないため、
     // 2インスタンス立つと results.json の競合が復活する。
     // カメラの二重占有・ComfyUI への二重投入も防げる。
@@ -846,11 +883,12 @@ class ElectronApp {
           generation: comfy.generation,
         });
 
-        // 本番は exe と同じ場所（Program Files 配下だと EPERM で書けない）を避け、
-        // OS のテンポラリへ出す。開く場所は showItemInFolder が案内する。
-        const outDir = app.isPackaged
-          ? path.join(app.getPath('temp'), 'kidspg-workflow')
-          : path.join(this.getBundleRoot(), 'tmp');
+        // アプリのフォルダ配下へ出す。**OS のテンポラリへ出さない**——
+        // 当日PCは1つのフォルダで完結させる方針なので、書き出したものが
+        // %TEMP% に散るのを避ける（フォルダを消せば片付く状態を保つ）。
+        // 以前は本番だけ app.getPath('temp') を使っていたが、当日は
+        // Program Files 配下に置かない（C:\kidspg\app）ので EPERM の心配は無い。
+        const outDir = path.join(this.getBundleRoot(), 'tmp');
         await fs.mkdir(outDir, { recursive: true });
         const outPath = path.join(outDir, `comfyui-workflow-${comfy.profileName}.json`);
         await fs.writeFile(outPath, JSON.stringify(workflow, null, 2) + '\n', 'utf-8');

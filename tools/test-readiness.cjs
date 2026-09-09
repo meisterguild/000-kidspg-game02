@@ -200,3 +200,58 @@ test('停止バッチは印を片付ける（止まっているのに準備完�
   const raw = fs.readFileSync(path.join(ROOT, 'stop-kidspg.bat'), 'utf8');
   assert.match(raw, /logs\\ready\.json/);
 });
+
+// ------------------------------------------------- フォルダ完結の取り決め
+
+/**
+ * 当日PCは「1つのフォルダで完結」させる方針（2026-09-09 判断）。
+ * ComfyUI もアプリ本体も、当日できたデータも C:\kidspg の中だけで済ませる。
+ * 片付けはフォルダを消すだけ、持ち帰りは丸ごとコピーだけ、にしたいため。
+ *
+ * 実測では既定で %APPDATA%\kidspg-game-2026 に 6.8MB（Chromium の Cache /
+ * GPUCache / Local Storage / Network / Preferences）が作られていた。
+ */
+test('Electron のデータ置き場をアプリ配下へ寄せている', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'src/main/main.ts'), 'utf8');
+  assert.match(raw, /setPath\('userData'/, 'userData を動かしていません');
+  assert.match(raw, /setPath\('sessionData'/);
+  assert.match(raw, /setPath\('crashDumps'/);
+  // 🔴 ready より前でないと効かない
+  const callAt = raw.indexOf('this.redirectAppDataIntoAppFolder()');
+  const readyAt = raw.indexOf('app.whenReady()');
+  assert.ok(callAt > 0, '呼び出しがありません');
+  assert.ok(callAt < readyAt, 'ready より後で呼んでいます（動かしても効きません）');
+});
+
+test('OS のテンポラリへ書き出さない', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'src/main/main.ts'), 'utf8');
+  // ワークフローの書き出し先が %TEMP% だとフォルダ完結が崩れる。
+  // ⚠️ コメントは対象外にする——「以前は temp を使っていた」という説明が
+  // 残っているだけで落ちてしまい、テストが意味を失う（最初にそれで落ちた）。
+  const codeLines = raw
+    .split(/\r?\n/)
+    .filter((line) => {
+      const t = line.trim();
+      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+    });
+  const hits = codeLines.filter((line) => /getPath\('temp'\)/.test(line));
+  assert.deepStrictEqual(
+    hits,
+    [],
+    "app.getPath('temp') を使っています（フォルダの外へ出ます）"
+  );
+});
+
+test('起動バッチは ImageMagick の一時ファイルもフォルダ内へ向ける', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf8');
+  assert.match(raw, /MAGICK_TEMPORARY_PATH=%~dp0tmp/);
+});
+
+test('生成する start-comfyui.bat は Python のキャッシュもフォルダ内へ向ける', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'tools/make-onsite-package.cjs'), 'utf8');
+  for (const name of ['HF_HOME', 'TORCH_HOME', 'XDG_CACHE_HOME']) {
+    assert.ok(src.includes(name), name + ' を設定していません');
+  }
+  // 当日はオフライン。外へ探しに行って待たされないように
+  assert.ok(src.includes('HF_HUB_OFFLINE=1'), 'オフライン指定がありません');
+});

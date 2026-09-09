@@ -115,6 +115,11 @@ if exist "%~dp0..\bin\ImageMagick\magick.exe" (
   set "PATH=%~dp0..\bin\ImageMagick;!PATH!"
   echo        携帯版を使います : %~dp0..\bin\ImageMagick
 )
+rem ImageMagick が大きな画像で使う一時ファイルも、このフォルダの中に置く。
+rem 当日PCは「1つのフォルダで完結」させる方針なので、%TEMP% に散らさない
+rem （片付けはフォルダを消すだけ、持ち帰りは丸ごとコピーだけ、を保つ）。
+if not exist "%~dp0tmp" mkdir "%~dp0tmp"
+set "MAGICK_TEMPORARY_PATH=%~dp0tmp"
 where magick > nul 2>&1
 if errorlevel 1 (
   echo        [警告] magick が見つかりません。記念カードが1枚も作られません。

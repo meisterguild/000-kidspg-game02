@@ -17,10 +17,11 @@
 | 救済ツール | **積む**（再生成・写真削除。無いと当日その場で何もできない） |
 | プロファイル | **local だけ**（CPU実行・SD1.5・モデル4本 4.1GB）。server（SDXL 10.6GB）は積まない |
 | 置き場所 | `C:\kidspg`（OneDrive の外） |
+| **フォルダ完結** | **この1つのフォルダの中だけで済ませる。**片付けはフォルダを消すだけ、持ち帰りは丸ごとコピーだけ（2026-09-09 判断・実測で確認） |
 
 ---
 
-## 3つの技術的な決定と、その根拠
+## 4つの技術的な決定と、その根拠
 
 ### 1. exe は作らない（Electron 本体で `dist\` を読ませる）
 
@@ -62,10 +63,9 @@ electron-builder が win-unpacked へコピーした自分自身は隣の exe �
 | ユーザー名依存 | ある（壊れる） | ない |
 | USB に積むもの | wheels 1.9GB + インストーラ | `python_embeded\` 1.9GB（完成品） |
 
-> ⚠️ **未検証。** この構成（ComfyUI 0.34.0 + torch CPU）で埋め込み Python が動くことを
-> まだ確かめていない。公式ポータブルが同じ方式なので通る見込みだが、**開発機で一度
-> 組んで1枚生成できることを見てから**配布に使う。詰まった場合の退避は「当日PCへ
-> 事前に Python 3.12 を入れ、wheels から venv を作る」。
+> ✅ **2026-09-09 に実測で成立を確認。** requirements.lock.txt と **86/86 パッケージが
+> 完全一致**（開発機の venv と同じ版）、ComfyUI 0.34.0 が起動、`/object_info` に
+> モデル4本、dummy_photo で **1枚生成 122.9 秒**。踏んだ落とし穴は下に全部書いた。
 >
 > もう1点、torch は **VC++ 2015-2022 再頒布可能パッケージ**を要求する。Windows 11 なら
 > 通常入っているが、点検を入れ、無い場合だけインストールを案内する（唯一の例外）。
@@ -191,6 +191,28 @@ ImportError: DLL load failed while importing cython_special:
 > これは「exe を作らない」判断だけでは避けられない問題です。exe を捨てても、
 > ComfyUI が読む未署名の .pyd は残るためです。
 > **別PCでの検証（オフライン状態で）が必要な最大の理由がこれです。**
+
+### 4. 1つのフォルダの中だけで完結させる
+
+**片付けはフォルダを消すだけ、持ち帰りは丸ごとコピーだけ**にしたい（2026-09-09 判断）。
+ところが既定では次のものが `C:\kidspg` の外へ出ていました。
+
+| 出ていたもの | どこへ | 実測 | 対処 |
+|---|---|---|---|
+| Electron の実行時データ | `%APPDATA%\kidspg-game-2026` | **6.8MB**（Cache / GPUCache / Local Storage / Network / Preferences） | `app.setPath('userData' ほか)` でアプリ配下へ。🔴 **ready より前に呼ぶ**（後では効かない） |
+| ワークフローの書き出し | `%TEMP%\kidspg-workflow` | — | アプリ配下の `tmp\` へ |
+| ImageMagick の一時ファイル | `%TEMP%` | — | `MAGICK_TEMPORARY_PATH` を `app\tmp` へ（start-kidspg.bat） |
+| Python ライブラリのキャッシュ | `%USERPROFILE%\.cache` | 現状は作られていない | `HF_HOME` / `TORCH_HOME` / `XDG_CACHE_HOME` を `ai\cache` へ（start-comfyui.bat）。あわせて `HF_HUB_OFFLINE=1` |
+
+ComfyUI 自身は既に完結していました（`temp` / `input` / `output` / `user` は
+既定で ComfyUI のフォルダ配下）。
+
+**実測での確認**（2026-09-09）: アプリを起動すると `app\appdata` に 6.8MB ができ、
+`%APPDATA%\kidspg-game-2026` の更新時刻は**変わりませんでした**。
+
+> ⚠️ カメラ権限の許可状態も Electron の userData に入ります。**`appdata` を消すと
+> 当日また確認が出うる**ので、当日の片付けで消すのは results の写真だけにしてください
+> （`ops` の `purge-photos.cjs`）。
 
 ### 3. 場所の書き換えは「当日PC」ではなく「作るとき」にやる
 
