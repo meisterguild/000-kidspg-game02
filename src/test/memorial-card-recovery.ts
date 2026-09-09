@@ -13,11 +13,74 @@
  */
 
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { NodeMemorialCardService } from './node-memorial-card-service';
 import { verifyPngFile } from '../main/services/png-integrity';
 import { acquireMaintenanceLock } from '../main/services/card-output';
 import type { GameResult } from '../shared/types';
+
+/**
+ * このツールが使う「リポジトリ（または配布された ops）のルート」と、
+ * 「素材（card_base_images / assets）のあるフォルダ」を決める。
+ *
+ * 🔴 **__dirname からの段数で決めてはいけない。** ここは実際に踏んだ:
+ *   ・tsx 実行（`npm run recovery`）    : __dirname = src/test        → ../.. = リポジトリ直下 ✅
+ *   ・コンパイル済み（retry-failed が呼ぶ）: __dirname = dist/main/test → ../.. = **dist/** ❌
+ * 段数が1つ足りないため、コンパイル済み経路は config.json を
+ * `<root>/dist/config.json` に探して必ず ENOENT で落ちていた。
+ * 2026-09-09 の敵対的レビューで指摘され、実際に再現を確認している
+ * （`retry-failed.cjs` が使うのはコンパイル済みのほうだけなので、
+ * **カード合成の救済が全環境で 100% 失敗していた**）。
+ *
+ * 🔴 **配布された当日PCでは、道具と素材が別のフォルダにある。**
+ *   C:\kidspg\ops\  … tools / dist / config.json / node（ここから実行する）
+ *   C:\kidspg\app\  … card_base_images / assets / results（素材と成果物）
+ * そこで「上へ辿って config.json のあるフォルダ」をルートとし、
+ * 素材はそこに無ければ隣の app\ を見る（tools/lib/resolve-results-dir.cjs と同じ流儀）。
+ */
+const findUpContaining = (start: string, marker: string): string | null => {
+  let dir = path.resolve(start);
+  for (;;) {
+    if (fsSync.existsSync(path.join(dir, marker))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+};
+
+export interface RecoveryRoots {
+  /** config.json のあるフォルダ */
+  toolRoot: string;
+  /** config.json の絶対パス */
+  configPath: string;
+  /** card_base_images と assets のあるフォルダ（NodeMemorialCardService に渡す） */
+  materialRoot: string;
+  /** 探した場所。見つからないと言うときに全部見せる */
+  searched: string[];
+}
+
+export const resolveRecoveryRoots = (from: string = __dirname): RecoveryRoots => {
+  const searched: string[] = [];
+  const toolRoot = findUpContaining(from, 'config.json');
+  if (!toolRoot) {
+    // 見つからないときも「探した起点」を返して、呼び出し側が言えるようにする
+    return {
+      toolRoot: path.resolve(from, '../..'),
+      configPath: path.resolve(from, '../..', 'config.json'),
+      materialRoot: path.resolve(from, '../..'),
+      searched: [from + ' から上へ辿って config.json を探しました'],
+    };
+  }
+  const candidates = [toolRoot, path.resolve(toolRoot, '..', 'app')];
+  let materialRoot = toolRoot;
+  for (const c of candidates) {
+    searched.push(path.join(c, 'card_base_images'));
+    if (fsSync.existsSync(path.join(c, 'card_base_images'))) { materialRoot = c; break; }
+  }
+  return { toolRoot, configPath: path.join(toolRoot, 'config.json'), materialRoot, searched };
+};
 
 /** 正規版カードのファイル名。`.partial`（合成中）はここに合致しない */
 const REGULAR_CARD_PATTERN = /^memorial_card_.*\.png$/;
@@ -129,19 +192,35 @@ class MemorialCardRecovery {
    */
   private async initializeMemorialCardService(): Promise<void> {
     try {
-      // 設定ファイルを読み込み
-      const configPath = path.join(__dirname, '../../config.json');
-      const configContent = await fs.readFile(configPath, 'utf-8');
+      // 設定ファイルと素材の場所は resolveRecoveryRoots が決める（上の注釈を参照）
+      const roots = resolveRecoveryRoots();
+      const configContent = await fs.readFile(roots.configPath, 'utf-8');
       const config = JSON.parse(configContent);
 
       if (!config.memorialCard) {
-        throw new Error('Memorial card configuration not found in config.json');
+        throw new Error(`Memorial card configuration not found in ${roots.configPath}`);
+      }
+
+      // 素材が本当にあるかを、合成に入る前に見る。
+      // 無いまま進むと「壊れたカードを退避したのに作り直せない」で終わる
+      const baseDir = path.resolve(
+        roots.materialRoot,
+        config.memorialCard.cardBaseImagesDir ?? 'card_base_images'
+      );
+      if (!fsSync.existsSync(baseDir)) {
+        throw new Error(
+          `カードの土台画像フォルダがありません: ${baseDir}` +
+          `\n   探した場所: ${roots.searched.join(' / ')}` +
+          `\n   当日PCでは実物は C:\\kidspg\\app\\card_base_images です`
+        );
       }
 
       this.memorialCardService = new NodeMemorialCardService(
         config.memorialCard,
-        path.dirname(path.dirname(__dirname)) // プロジェクトルート
+        roots.materialRoot
       );
+      console.log(`   設定 : ${roots.configPath}`);
+      console.log(`   素材 : ${roots.materialRoot}`);
 
       console.log('✅ NodeMemorialCardService initialized successfully');
     } catch (error) {
@@ -523,6 +602,81 @@ class MemorialCardRecovery {
 }
 
 /**
+ * 「カードの合成が今この環境で本当に使えるか」を確かめる。
+ *
+ * 🔴 **--dry-run で代用してはいけない。** run() は `if (!dryRun)` の中でしか
+ * 初期化しないので、--dry-run は config.json も土台画像も ImageMagick も
+ * 一切触らずに終了コード 0 を返す。以前 tools/retry-failed.cjs はこれを
+ * 「合成が使える」の根拠にしていたため、**合成が絶対に失敗する環境でも
+ * canRebuild = true** になり、壊れたカードを退避して参照をプレースホルダへ
+ * 倒したうえで作り直しに失敗する——純粋な劣化で終わっていた
+ * （2026-09-09 の敵対的レビュー指摘）。
+ *
+ * ここで見るのは合成が実際に必要とする4つ:
+ *   1. config.json が読めて memorialCard がある
+ *   2. 土台画像フォルダがあり、背景が1枚以上ある
+ *   3. フォントのある場所が分かる（無ければ magick が文字を置けない）
+ *   4. magick が**起動できる**（PATH と VC++ と Smart App Control の実地確認）
+ */
+export const checkCompose = async (): Promise<{ ok: boolean; lines: string[] }> => {
+  const lines: string[] = [];
+  const roots = resolveRecoveryRoots();
+  lines.push(`設定 : ${roots.configPath}`);
+  lines.push(`素材 : ${roots.materialRoot}`);
+
+  let config: { memorialCard?: { cardBaseImagesDir?: string; magickTimeout?: number } };
+  try {
+    config = JSON.parse(await fs.readFile(roots.configPath, 'utf-8'));
+  } catch (error) {
+    lines.push(`NG : config.json が読めません（${String(error)}）`);
+    return { ok: false, lines };
+  }
+  if (!config.memorialCard) {
+    lines.push('NG : config.json に memorialCard がありません');
+    return { ok: false, lines };
+  }
+
+  const baseDir = path.resolve(roots.materialRoot, config.memorialCard.cardBaseImagesDir ?? 'card_base_images');
+  let backgrounds = 0;
+  try {
+    backgrounds = (await fs.readdir(baseDir)).filter((f) => /^bg-card-rank-.*\.png$/i.test(f)).length;
+  } catch {
+    lines.push(`NG : 土台画像フォルダがありません : ${baseDir}`);
+    lines.push(`     探した場所 : ${roots.searched.join(' / ')}`);
+    return { ok: false, lines };
+  }
+  if (backgrounds === 0) {
+    lines.push(`NG : 土台画像が1枚もありません : ${baseDir}`);
+    return { ok: false, lines };
+  }
+  lines.push(`OK : 土台画像 ${backgrounds} 枚 : ${baseDir}`);
+
+  // ここまで通ったら本物の service を組む（NodeImageCompositionConfig の解決も通る）
+  const service = new NodeMemorialCardService(
+    config.memorialCard as never,
+    roots.materialRoot
+  );
+  // フォントは magick の -font に渡る。無いと文字が置けず、絵だけのカードになる
+  const fontPath = service.getImageConfig().getFontPath();
+  if (fontPath && !fsSync.existsSync(fontPath)) {
+    lines.push(`注意 : フォントが見つかりません : ${fontPath}（文字が置けない可能性）`);
+  } else {
+    lines.push(`OK : フォント : ${fontPath || '(既定)'}`);
+  }
+
+  // 🔴 magick は**起動できるか**まで見る。「ファイルがある」では足りない
+  //    （携帯版の PATH が届いていない / VC++ が無い / SAC に止められた、が全部ここに出る）
+  const probe = spawnSync('magick', ['-version'], { encoding: 'utf8', shell: false, timeout: 30_000 });
+  if (probe.error || probe.status !== 0) {
+    lines.push(`NG : magick を起動できません（${probe.error ? probe.error.message : 'exit ' + probe.status}）`);
+    lines.push('     PATH に ImageMagick が入っているか、当日PCなら bin\\ImageMagick を確認してください');
+    return { ok: false, lines };
+  }
+  lines.push(`OK : ${(probe.stdout || '').split(/\r?\n/)[0]}`);
+  return { ok: true, lines };
+};
+
+/**
  * スクリプト実行部分
  */
 async function main() {
@@ -531,6 +685,12 @@ async function main() {
   const reset = args.includes('--reset') || args.includes('-r');
   const forceAll = args.includes('--force-all') || args.includes('-f');
   const help = args.includes('--help') || args.includes('-h');
+  // 合成が使えるかだけを確かめて終わる（retry-failed の事前確認が使う）
+  if (args.includes('--check-compose')) {
+    const { ok, lines } = await checkCompose();
+    for (const l of lines) console.log('   ' + l);
+    process.exit(ok ? 0 : 1);
+  }
   // --only <日時> で1件だけ直す。当日、稼働中のアプリと CPU / ディスクを
   // 奪い合わないために必要（全件走ると数十分〜数時間かかる）
   const onlyIndex = args.indexOf('--only');
@@ -552,6 +712,7 @@ Options:
   --reset, -r       Reset all recovery marks (clear history)
   --force-all, -f   Force recovery of all targets (rebuild even if a valid card exists)
   --only <日時>     Recover only that result directory (e.g. --only 20260912_101112)
+  --check-compose   合成が今この環境で使えるかだけを確かめて終わる（何も書き換えない）
   --help, -h        Show this help message
 
 Recovery Status Management:
@@ -579,7 +740,7 @@ Mark Files:
   // ずれる。テストが本物の results/ を書き換える事故にも直結する。
   const resultsDir = process.env.KIDSPG_RESULTS_DIR
     ? path.resolve(process.env.KIDSPG_RESULTS_DIR)
-    : path.join(__dirname, '../../results');
+    : path.join(resolveRecoveryRoots().materialRoot, 'results');
   
   const recovery = new MemorialCardRecovery(resultsDir);
   await recovery.run({ dryRun, reset, forceAll, only });

@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ResultsData, RecentResultEntry, RankingResultEntry, GameResult, AppConfig } from '@shared/types';
 import { verifyPngFile } from './png-integrity';
-import { renameWithRetry } from './card-output';
+import { writeJsonAtomic } from './write-json-atomic';
 
 const RESULTS_FILE = 'results.json';
 
@@ -21,6 +21,23 @@ export class ResultsManager {
   constructor(resultsDir: string, config: AppConfig | null = null) {
     this.resultsDir = resultsDir;
     this.resultsFilePath = path.join(resultsDir, RESULTS_FILE);
+    this.config = config;
+  }
+
+  /**
+   * 設定が読み直されたときに差し替える。
+   *
+   * 🔴 **起動時のスナップショットを握り続けてはいけない。**
+   * `reload-config` / `save-config` は `this.config` を新しいオブジェクトへ
+   * 差し替えるだけなので、以前はこのクラスだけ起動時の値を持ち続け、
+   * `maxRecent` / `maxRanking` が**再起動まで変わらなかった**。
+   * 一方 RankingService は毎回 config.json を読み直すので、
+   * 「表示件数を増やして再読み込み」をすると
+   * **表示側は N 件求めるのに results.json は古い件数で切る**という
+   * 片効きになっていた（画面には何も出ない。
+   * 敵対的レビュー 2026-09-09 の指摘）。
+   */
+  updateConfig(config: AppConfig | null): void {
     this.config = config;
   }
 
@@ -147,21 +164,12 @@ export class ResultsManager {
    * 開いた瞬間に EPERM / EBUSY になる。**rename は必ずここを通してリトライすること。**
    * 直書きすると、一度の衝突で黙って記録を落とす。
    */
+  // 実装は services/write-json-atomic.ts に出してある。
+  // 🔴 result.json を最初に作る書き込み（main.ts の save-json）も同じ仕組みを
+  // 通す必要があり、ここに private で抱えていたせいでそちらが直書きのままだった
+  // （敵対的レビュー 2026-09-09 の指摘）。
   private async writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
-    // tmp 名は呼び出しごとに固有にする（固定名だと同時書き込みで混線する）
-    const tmpPath = `${filePath}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
-    try {
-      await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
-      // ランキング画面の監視・AV・OneDrive 同期に負けると記録が落ちる。
-      // カードの確定と**同じ実装**（card-output.ts の renameWithRetry）を通す。
-      // ここに待ち時間の表をもう1つ持つと、片方だけ直したときに挙動がずれる。
-      // また待っても直らないエラー（ENOENT など）は即座に諦めてくれるので、
-      // ゲーム終了直後の記録更新を16秒も待たせずに済む。
-      await renameWithRetry(tmpPath, filePath);
-    } catch (error) {
-      await fs.unlink(tmpPath).catch(() => undefined);
-      throw error;
-    }
+    await writeJsonAtomic(filePath, data);
   }
 
   async saveResults(resultsData: ResultsData): Promise<void> {

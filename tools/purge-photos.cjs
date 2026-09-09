@@ -17,8 +17,8 @@
  *
  * ■ 🔴 消すと AI 画像の再生成ができなくなる
  * tools/retry-failed.cjs のパターンA（AI画像が無い回の作り直し）は、
- * **毎回この写真を ComfyUI へ上げ直す**（ComfyUI の input は再起動で消えるため）。
- * 写真を消した回は、あとから AI 画像を作り直せない。
+ * **毎回この写真を ComfyUI へ上げ直す**。写真を消した回は、あとから
+ * AI 画像を作り直せない。
  * そのため既定では「カードが完成している回」だけを対象にする。
  * 未完成の回まで消したいときだけ --include-incomplete を付ける。
  *
@@ -26,6 +26,18 @@
  *   ・既定はドライラン。--apply を付けたときだけ消す
  *   ・カードの完成を PNG の中身まで見て確かめる（png-integrity）
  *   ・result.json が写真を指している場合は参照も外す（実体の無いパスを残さない）
+ *
+ * ■ ComfyUI 側にも同じ写真が残る（2026-09-09 の敵対的レビューで発覚）
+ * 🔴 アプリは `/upload/image` で写真を上げるので `<ComfyUI>\input\` に
+ * **参加した子ども全員の生の顔写真**が、ワークフローの SaveImage により
+ * `<ComfyUI>\output\` に変換後の絵が溜まる。ここは誰も消していなかった。
+ * 以前この説明は「ComfyUI の input は再起動で消えるため」と書いていたが、
+ * **そうなる仕組みはどこにも無い**（実測: 何度も再起動した開発機で
+ * input 44 件・output 51 件が残っていた）。つまり results の写真を消しても
+ * 同じ写真の完全なコピーが残る状態だった。
+ * このツールは results と合わせて**そこも消す**。判断は
+ * tools/lib/comfyui-scratch.cjs（トップレベルの input/ output/ のファイルだけ）。
+ * 触りたくない場合は `--keep-comfyui` を付ける。
  */
 
 'use strict';
@@ -35,21 +47,52 @@ const fsp = require('fs/promises');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+const { resolveResultsDir, describeMissing } = require('./lib/resolve-results-dir.cjs');
+const { resolveComfyUIRoot, listScratchFiles } = require('./lib/comfyui-scratch.cjs');
 
 const argv = process.argv.slice(2);
 const has = (name) => argv.includes(`--${name}`);
-const flag = (name) => {
+/**
+ * 🔴 **値の書き忘れを黙って通してはいけない。**
+ * `--only --apply` のように値を書き忘れると、以前はここが null を返し、
+ * ONLY 無し＝**全プレイの生の顔写真を一括削除**になっていた。
+ * しかも写真を消した回は AI 画像を作り直せなくなる（このファイル冒頭の注意）。
+ * retry-failed.cjs は同じ罠にちゃんと検証を入れているのに、
+ * こちらだけ抜けていた（敵対的レビュー 2026-09-09 の指摘）。
+ */
+const flagErrors = [];
+const flag = (name, { pattern, example } = {}) => {
   const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : null;
+  if (i < 0) return null;
+  const next = argv[i + 1];
+  if (!next || next.startsWith('--')) {
+    flagErrors.push(`--${name} には値を指定してください` + (example ? `（例: --${name} ${example}）` : ''));
+    return null;
+  }
+  if (pattern && !pattern.test(next)) {
+    flagErrors.push(`--${name} の指定が想定の形ではありません: ${next}` + (example ? `（例: ${example}）` : ''));
+    return null;
+  }
+  return next;
 };
 
 const APPLY = has('apply');
 const INCLUDE_INCOMPLETE = has('include-incomplete');
-const ONLY = flag('only');
+const INCLUDE_UNVERIFIED = has('include-unverified');
+const KEEP_COMFYUI = has('keep-comfyui');
+const ONLY = flag('only', { pattern: /^\d{8}_\d{6}$/, example: '20260912_101112' });
 
-const resultsDir = process.env.KIDSPG_RESULTS_DIR
-  ? path.resolve(process.env.KIDSPG_RESULTS_DIR)
-  : path.join(ROOT, 'results');
+if (flagErrors.length > 0) {
+  console.error('指定に誤りがあります:');
+  for (const e of flagErrors) console.error('  ・' + e);
+  console.error('\n何も消していません。');
+  process.exit(1);
+}
+
+// results の場所は tools/lib/resolve-results-dir.cjs に集めてある
+// （配布された ops から実行すると ops/results を見てしまい、当日動かなかった）
+const resolvedResults = resolveResultsDir(ROOT);
+const resultsDir = resolvedResults.dir;
 
 /** dist から PNG の完全性判定を借りる（アプリと同じ判定を使う） */
 const loadVerifier = () => {
@@ -68,7 +111,7 @@ const human = (bytes) => {
 
 const main = async () => {
   if (!fs.existsSync(resultsDir)) {
-    console.error(`results フォルダがありません: ${resultsDir}`);
+    console.error(describeMissing(resolvedResults));
     process.exit(1);
   }
   const { verifyPngFile } = loadVerifier();
@@ -107,7 +150,15 @@ const main = async () => {
       // 実体の中身まで見る。上半分だけのカードで「完成」と見なすと写真を失う
       const check = await verifyPngFile(cardPath);
       if (check.status === 'corrupt') reason = `カードが壊れている（${check.error}）`;
-      // unknown（読めなかった）は OneDrive 同期などで普通に起きるので完成扱いにする
+      // 🔴 unknown（読めなかった）を完成扱いにしてはいけない。
+      // ロック・ウイルス対策・同期の干渉で読めないことは普通に起きるが、
+      // **半端なカードの写真を先に消すと、あとから作り直せない**。
+      // retry-failed.cjs は同じ unknown を「触らない」として厳格に扱っており、
+      // 2つのツールで判断が真逆になっていた（敵対的レビュー 2026-09-09 の指摘）。
+      // どうしても消したい場合だけ --include-unverified を要求する。
+      else if (check.status === 'unknown' && !INCLUDE_UNVERIFIED) {
+        reason = `カードを確かめられなかった（${check.error || '読み取り失敗'}）`;
+      }
     }
 
     const size = (await fsp.stat(photoPath)).size;
@@ -140,7 +191,40 @@ const main = async () => {
   if (!APPLY) {
     console.log('');
     console.log('[purge] ドライランなので何も消していません。消すには --apply を付けてください');
+    // ドライランでも ComfyUI 側の件数は見せる（何が残っているかを知るため）
+    await purgeComfyUIScratch();
     return;
+  }
+
+  // 🔴 **消す前に保守ロックを取る。**
+  // retry-failed が写真を ComfyUI へ上げ直している最中（1枚3分）に、別の人が
+  // このツールを --apply で叩くと、読み込む直前に写真が消えて ENOENT になる。
+  // retry-failed はロックを取るのに、こちらは見ていなかったので防波堤が
+  // 片側しか無かった（敵対的レビュー 2026-09-09 の指摘）。
+  const cardOutputPath = path.join(ROOT, 'dist', 'main', 'main', 'services', 'card-output.js');
+  let releaseLock = null;
+  if (fs.existsSync(cardOutputPath)) {
+    // eslint-disable-next-line global-require
+    const { acquireMaintenanceLock } = require(cardOutputPath);
+    releaseLock = await acquireMaintenanceLock(resultsDir);
+    if (!releaseLock) {
+      console.error('');
+      console.error('[purge] 別のプロセスが results/ を保守中です（アプリの起動時点検や作り直し）。');
+      console.error('        写真を消すのは待ってください。何も消していません。');
+      console.error('        ＊ 誰も動いていないのに出る場合は、アプリを stop-kidspg.bat で止めてから');
+      console.error('          node tools/retry-failed.cjs --force-unlock --apply を一度実行してください');
+      process.exitCode = 1;
+      return;
+    }
+    // Ctrl-C で抜けたときにロックを残さない
+    for (const sig of ['SIGINT', 'SIGTERM']) {
+      process.once(sig, async () => {
+        try { await releaseLock(); } catch { /* 解放できなくても終了する */ }
+        process.exit(130);
+      });
+    }
+  } else {
+    console.error('[purge] dist が無いため保守ロックを取れません。排他なしで続行します');
   }
 
   console.log('');
@@ -173,9 +257,76 @@ const main = async () => {
       console.error(`   ${t.dt} 削除に失敗: ${error.message}`);
     }
   }
+  // 取ったロックは必ず返す（残すとアプリの起動時点検が毎回飛ばされる）
+  if (releaseLock) { try { await releaseLock(); } catch { /* 解放できなくても続ける */ } }
   console.log(`[purge] 完了: ${done} 件 / ${human(freed)} を解放しました`);
   if (done < targets.length) {
     console.log(`[purge] ⚠️ ${targets.length - done} 件は消せませんでした（上のエラーを確認してください）`);
+  }
+
+  await purgeComfyUIScratch();
+};
+
+/**
+ * ComfyUI の作業用の置き場（input/ output/）を空にする。
+ * 🔴 results を消しても**ここに同じ顔写真の完全なコピーが残る**ため、
+ * 個人情報の始末としては必須（上の注釈を参照）。
+ */
+const purgeComfyUIScratch = async () => {
+  console.log('');
+  if (KEEP_COMFYUI) {
+    console.log('[purge] ComfyUI の input/output は --keep-comfyui が指定されたので触りません');
+    console.log('        🔴 生の顔写真が残ります。持ち帰る前に必ず消してください');
+    return;
+  }
+
+  // config.json は app 側にある（配布形では ops から実行するため隣を見る）
+  const candidates = [
+    path.join(ROOT, 'config.json'),
+    path.join(ROOT, '..', 'app', 'config.json'),
+  ];
+  const configPath = candidates.find((c) => fs.existsSync(c));
+  if (!configPath) {
+    console.log('[purge] ComfyUI の場所が分かりません（config.json が見つかりません）。探した場所:');
+    for (const c of candidates) console.log('        ' + c);
+    return;
+  }
+  const { root, from } = resolveComfyUIRoot(configPath);
+  if (!root) {
+    console.log(`[purge] ComfyUI の場所が分かりません（${from}）。input/output は触りません`);
+    console.log('        🔴 AI 変換を使っていた場合、生の顔写真が残っている可能性があります');
+    return;
+  }
+
+  const groups = listScratchFiles(root);
+  const all = groups.flatMap((g) => g.files);
+  console.log(`[purge] ComfyUI の作業用の置き場 : ${root}  (${from})`);
+  for (const g of groups) {
+    console.log(`        ${path.basename(g.dir)}\\ : ${g.files.length} 件 / ${human(g.files.reduce((a, f) => a + f.size, 0))}`);
+  }
+  if (all.length === 0) {
+    console.log('        すでに空です');
+    return;
+  }
+  if (!APPLY) {
+    console.log('        ドライランなので消していません（--apply を付けてください）');
+    return;
+  }
+
+  let removed = 0;
+  let bytes = 0;
+  for (const f of all) {
+    try {
+      await fsp.unlink(f.path);
+      removed += 1;
+      bytes += f.size;
+    } catch (error) {
+      console.error(`        削除に失敗: ${f.path} (${error.message})`);
+    }
+  }
+  console.log(`        消しました: ${removed} 件 / ${human(bytes)}`);
+  if (removed < all.length) {
+    console.log(`        ⚠️ ${all.length - removed} 件は消せませんでした（ComfyUI が使用中かもしれません）`);
   }
 };
 

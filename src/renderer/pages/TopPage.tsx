@@ -41,6 +41,10 @@ const TopPage: React.FC = () => {
     const handleKeyPress = (event: KeyboardEvent) => {
       if (event.key === ' ' || event.key === 'Enter') {
         event.preventDefault();
+        // 🔴 キーリピートを無視する（CameraPage と同じ理由）。
+        // 押しっぱなしにすると画面を次々に進んでしまい、
+        // 結果画面 → TOP → 次のプレイ開始まで一気に走る
+        if (event.repeat) return;
         handleStart();
       }
     };

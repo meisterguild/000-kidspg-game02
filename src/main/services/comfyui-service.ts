@@ -66,9 +66,13 @@ export class ComfyUIService {
 
       this.worker.on('error', (error) => {
         console.error('ComfyUI Worker Error:', error);
-        this.sendToRenderer('comfyui-error', { 
-          message: `Worker Error: ${error.message}` 
+        this.sendToRenderer('comfyui-error', {
+          message: `Worker Error: ${error.message}`,
         });
+        this.notifyStaff(
+          'comfyui-worker-error',
+          'AI変換で問題が起きました。カードの絵がプレースホルダになることがあります: ' + error.message
+        );
       });
 
       this.worker.on('exit', (code) => {
@@ -88,6 +92,13 @@ export class ComfyUIService {
         this.sendToRenderer('comfyui-error', {
           message: `ComfyUI ワーカーが停止しました (exit ${code})。AI変換は行われません。`,
         });
+        // 🔴 これ以降、撮影は通るのに AI 画像が一枚も来なくなる。必ず見せる
+        this.notifyStaff(
+          'comfyui-worker-stopped',
+          'AI変換が止まりました（ワーカー停止 exit ' + code + '）。' +
+            'これ以降カードの絵は全員同じプレースホルダになります。' +
+            'アプリを再起動してください。'
+        );
       });
 
       this.worker.postMessage({
@@ -195,10 +206,18 @@ export class ComfyUIService {
         break;
       }
 
-      case 'job-error':
-        this.updateJobStatus((data as ComfyUIJobProgressData).jobId, 'error');
+      case 'job-error': {
+        const jobData = data as ComfyUIJobProgressData;
+        this.updateJobStatus(jobData.jobId, 'error');
         this.sendToRenderer('comfyui-job-error', data);
+        // 1件でも失敗すればその子はプレースホルダになる。黙って通さない
+        this.notifyStaff(
+          'comfyui-job-error',
+          'AI変換に失敗した回があります（直近: ' + jobData.jobId + '）。' +
+            'その回のカードはプレースホルダになります。'
+        );
         break;
+      }
 
       case 'job-canceled':
         this.updateJobStatus((data as ComfyUIJobProgressData).jobId, 'error'); // canceledをerrorとして扱う
@@ -213,10 +232,16 @@ export class ComfyUIService {
         this.sendToRenderer('comfyui-health-check', data);
         break;
 
-      case 'error':
+      case 'error': {
         console.error('ComfyUI Worker Error:', data);
         this.sendToRenderer('comfyui-error', data);
+        const message = (data as { message?: string }).message ?? '（詳細不明）';
+        this.notifyStaff(
+          'comfyui-worker-error',
+          'AI変換で問題が起きました。カードの絵がプレースホルダになることがあります: ' + message
+        );
         break;
+      }
 
       default:
         console.warn('Unknown worker message type:', type);
@@ -245,6 +270,25 @@ export class ComfyUIService {
           }, 5000); // 5秒後に削除
         }
       }
+    }
+  }
+
+  /**
+   * スタッフへ知らせる（画面上端の帯）。
+   *
+   * 🔴 `comfyui-error` / `comfyui-job-error` を送るだけでは**誰にも見えない**。
+   * この2つを購読しているのはテスト画面だけで、本番画面には購読者が無かった。
+   * そのため稼働中に ComfyUI のワーカーが死んでも、撮影は通りカードは
+   * プレースホルダで出続け、**誰も気づかないまま数十人ぶんが
+   * プレースホルダになる**（敵対的レビュー 2026-09-09 の指摘）。
+   * 帯が購読しているチャンネル（startup-warning）へも流す。
+   *
+   * 同じ kind は帯側で1件にまとめられるので、ジョブごとの失敗が
+   * 積み上がって画面を埋めることはない。
+   */
+  private notifyStaff(kind: string, message: string): void {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send('startup-warning', { kind, message });
     }
   }
 

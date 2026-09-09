@@ -1,5 +1,10 @@
 import React, { useEffect } from 'react';
-import { preloadSpecificAssets, isAssetsLoaded, playSound } from './utils/assets';
+import {
+  preloadSpecificAssets,
+  isAssetsLoaded,
+  playSound,
+  markBackgroundPreloadFailed,
+} from './utils/assets';
 import { ALL_BACKGROUND_ASSETS } from '@shared/utils/constants';
 import { ScreenProvider, useScreen } from './contexts/ScreenContext';
 import { GameSessionProvider, useGameSession } from './contexts/GameSessionContext';
@@ -18,6 +23,9 @@ import { NavBar } from './components/NavBar';
 // 終了確認ダイアログ
 import { ExitConfirmationDialog } from './components/ExitConfirmationDialog';
 import { useExitConfirmation } from './hooks/useExitConfirmation';
+// 起動バッチが「準備完了」を実測で判断するための報告（hooks/useReportReady.ts）
+import { useReportReady } from './hooks/useReportReady';
+import { StaffNoticeBanner } from './components/StaffNoticeBanner';
 
 // 画面のレンダリングと副作用を担当するコンポーネント
 const AppContent: React.FC = () => {
@@ -34,6 +42,10 @@ const AppContent: React.FC = () => {
     handleCancel,
   } = useExitConfirmation();
 
+  // 画面が出てカメラの初期化が決着したら、main へ1回だけ報告する。
+  // main がそれを logs/ready.json に書き、start-kidspg.bat がそれを待つ
+  useReportReady();
+
   // アセット読み込み
   useEffect(() => {
     const initializeAssets = async () => {
@@ -44,6 +56,9 @@ const AppContent: React.FC = () => {
         setAssetsLoaded(true);
       } catch (error) {
         console.error('バックグラウンドアセット読み込みエラー:', error);
+        // 続行するのは正しい（ゲームは動く）。ただし**黙って通さない**——
+        // 準備確認がこれを見て当日スタッフに伝える（hooks/useReportReady.ts）
+        markBackgroundPreloadFailed();
         setAssetsLoaded(true); // エラーでも続行
       }
     };
@@ -129,6 +144,11 @@ const AppContent: React.FC = () => {
       {/* マウス操作でも「もどる」「終了」ができるようにする（キーボード必須にしない）。
           ゲーム中は GamePage が独自のヘッダを持つので NavBar は出さない。 */}
       {currentScreen !== 'GAME' && <NavBar />}
+
+      {/* main からのスタッフ向けの注意（記録の保存に失敗した等）。
+          ゲーム中も出す——その回の記録が消えたことは、遊び終わる前に
+          スタッフが知る必要がある（components/StaffNoticeBanner の注釈） */}
+      <StaffNoticeBanner />
 
       {renderCurrentScreen()}
       

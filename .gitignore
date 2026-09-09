@@ -44,6 +44,14 @@ yarn-error.log*
 
 # KidsPG
 .claude/
+
+# ただし .claude/skills/ は**共有したい**（このリポジトリの作業手順そのものなので、
+# 誰が clone しても同じ /コマンド が使えるようにする）。
+# 例: /long-review = 長時間離席時のレビュー＆修正ループ
+!/.claude/
+!/.claude/skills/
+!/.claude/skills/**
+
 results/
 results*/
 docs/memorial_site_src/card_images/*
@@ -76,12 +84,12 @@ docs/memorial_site_src/
 
 # 昨年の「よけまくり中」用アセット。今年は参照していない
 # （assets.ts のコメントも「昨年のタイトルなので参照しない」と明記）
-src/renderer/assets/images/title_image_01.png
-src/renderer/assets/images/title_image_02.png
-src/renderer/assets/images/title_image_03.png
-src/renderer/assets/images/title_image_04.png
-src/renderer/assets/images/sprite_items.png
-src/renderer/assets/images/sprite_items.xcf
+#
+# 2026-09-09 に src/renderer/assets/images/ から superseded_2025/ へ**移動**した。
+# assets.ts は new URL(`../assets/images/${relativePath}`, import.meta.url) という
+# 動的パターンで画像を読むため、**Vite はあのフォルダの全ファイルを dist へ出力する**。
+# 参照が無くても置いてあるだけで配布物に載り、19.6MB を当日PCへコピーすることになっていた。
+superseded_2025/
 
 # 昨年のスプライト確認ページ。存在しないアセットキーを参照していて
 # **コンパイルが通らない**ため tsconfig の exclude で型検査から外されている。
@@ -98,3 +106,14 @@ next-env.d.ts
 # 昨年のランキング画面のスクリーンショット。**実在の人物の AI ポートレート**を
 # 載せたカードが写っている（カードの意匠も「よけまくり中」で今年のものではない）
 docs/ranking_ux_bug1.png
+
+# 差し替え前のカード背景。今年の意匠の変遷だが**今回は使わない**ため追跡しない
+# （2026-09-08 判断。ファイルはローカルに残してある）
+card_base_images/superseded_*/
+# 当日PC向けの配布パッケージ（作成物そのものは追跡しない。
+# 作り方は tools/make-onsite-package.cjs、設計は docs/distribution-plan.md）
+/onsite-package/
+
+# Electron の実行時データ（当日PCでフォルダ完結させるためアプリ配下へ寄せた）。
+# Chromium の Cache / GPUCache / Local Storage など。配布物には入れない
+/appdata/

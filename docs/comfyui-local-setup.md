@@ -1,7 +1,7 @@
 # ローカルPCでの ComfyUI 構築手順（2026年版）
 
 作成: 2026-09-01 夜間作業
-対象: Windows 11。AIサーバー（`ssh rag-poc`）を使わず、**ローカルPCだけ**でカード生成まで通す構成。
+対象: Windows 11。AIサーバー（`ssh "$REMOTE"`）を使わず、**ローカルPCだけ**でカード生成まで通す構成。
 
 > このPC（作業機）の実測環境は §5。**NVIDIA GPU が無いため CPU 実行**になっている。
 > 本番PCが決まったら §6 の手順で GPU 版へ切り替えること。
@@ -65,18 +65,72 @@ cd /c/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
 
 ## 4. モデルの取得
 
-AIサーバーに届くなら従来どおり:
+### AIサーバー（社内 LAN）から取る
 
 ```bash
-bash tools/fetch-models.sh C:/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
+# 第1引数はモデル置き場、第2引数はプロファイル（既定 local）
+bash tools/fetch-models.sh C:/WORK/AI/models local
+bash tools/fetch-models.sh C:/WORK/AI/models server
 ```
 
-**社外など rag-poc に届かない場所では HuggingFace から直接取る**（`C:\WORK\AI\dl-models.sh`）。
-5ファイルを並列に落とす。合計約 10.6GB。
+サーバー上は **HuggingFace の hub キャッシュがそのまま共有ストア**になっている。
+
+```
+/srv/llm/hf/hub/models--<org>--<repo>/snapshots/<revision>/<ファイル名>   ← シンボリックリンク
+/srv/llm/hf/hub/models--<org>--<repo>/blobs/<sha256>                      ← 実体
+```
+
+`<revision>` は落とした時期で変わるので**パスを決め打ちしないこと**。
+スクリプトは `snapshots` 配下を `find` して `readlink -f` で実体へ解決している。
+中身を直接見るには:
 
 ```bash
-bash C:/WORK/AI/dl-models.sh C:/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
+ssh "$REMOTE" 'ls -d /srv/llm/hf/hub/models--* | sed "s|.*/models--||"'
+ssh "$REMOTE" 'du -sh /srv/llm/hf/hub/models--ByteDance--Hyper-SD'
 ```
+
+#### 🔴 いまサーバーにあるのは server（SDXL）用だけ
+
+2026-09-08 に実地確認した結果:
+
+| モデル | プロファイル | サーバー上 |
+|---|---|---|
+| `animagine-xl-4.0.safetensors` | server | あり（6.5G） |
+| `controlnet-union-sdxl-promax.safetensors` | server | あり（2.4G） |
+| `Hyper-SDXL-8steps-CFG-lora.safetensors` 他2本 | server | あり（各 751M） |
+| `sdxl_vae.safetensors` | server | あり（320M） |
+| `DreamShaper_8_pruned.safetensors` | **local（当日使う）** | **無し** |
+| `sd-vae-ft-mse.safetensors` | **local** | **無し** |
+| `control_v11p_sd15_canny.safetensors` | **local** | **無し** |
+| `Hyper-SD15-8steps-CFG-lora.safetensors` | **local** | **無し** |
+
+`ByteDance/Hyper-SD` のキャッシュはあるが **SDXL 版だけ**で、SD15 版は入っていない
+（HF のキャッシュは「要求したファイルだけ」入るため）。
+
+したがって **当日動かす CPU 実行構成のモデルは、いまは LAN から取れない。**
+各自 HuggingFace から取ること（下記）。サーバーへ置きたい場合は
+llm-catalog にダウンロードを積む（`curl http://192.168.1.10:50050/api/queue`）か、
+手元にある機体から転送する。
+
+### HuggingFace から直接取る
+
+**AI サーバーに届かない場所、または上表で「無し」のモデルはここから取る。**
+2026-09-08 にスクリプトをリポジトリへ取り込んだ（それまでリポジトリ外の
+`C:\WORK\AI\dl-models.sh` を参照していて、clone しただけでは作り直せなかった）。
+
+```bash
+# local プロファイル（CPU実行・SD1.5）。**当日使うのはこちら**。4本・約4.1GB
+bash tools/dl-models-local.sh C:/WORK/AI/models
+
+# server プロファイル（GPU機・SDXL）。5本・約10.6GB
+bash tools/dl-models.sh C:/WORK/AI/ComfyUI_20260902_0.34.0/ComfyUI
+```
+
+⚠️ **この節はもともと SDXL（server）のことしか書いていなかった。**
+config.json の activeProfile は `local` で、当日実際に使うのは SD1.5 の4本。
+その入手元がどこにも記録されておらず、環境を作り直せない状態だった（2026-09-08 に判明）。
+ローカル用の内訳とサイズは README の
+「[リポジトリに含まれないもの](../README.md#リポジトリに含まれないもの別途用意が必要)」にある。
 
 > レジューム（`curl -C -`）は使っていない。HF の CDN が Range を無視して
 > 全体を追記してくることがあり、**サイズ超過の壊れたファイル**ができた（実際に踏んだ）。

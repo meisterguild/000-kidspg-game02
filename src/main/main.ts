@@ -24,6 +24,19 @@ import {
   type WorkflowTemplate,
 } from './services/workflow-template';
 import { resolveComfyUIConfig, type ResolvedComfyUIConfig } from './services/comfyui-config';
+import { launchComfyUI } from './services/comfyui-launcher';
+import {
+  classifyReadiness,
+  checkResultsWritable,
+  clearReadiness,
+  writeReadiness,
+  type ReadinessReport,
+  type RendererReadiness,
+} from './services/readiness';
+import { resolveMagick } from './services/magick-path';
+import { locateAsset } from './services/asset-locator';
+import { writeJsonAtomic } from './services/write-json-atomic';
+import { collectBalanceWarnings } from './services/balance-warnings';
 import { applyConfigPatch } from './services/config-writer';
 
 /**
@@ -56,6 +69,13 @@ class ElectronApp {
   /** activeProfile を解決した後の ComfyUI 設定。config.comfyui を直接読まずこちらを使う */
   private comfyUI: ResolvedComfyUIConfig | null = null;
   private memorialCardService: MemorialCardService | null = null;
+  /**
+   * 実際に使う magick の場所と、起動できたか。
+   * ready.json に載せて起動バッチの「準備完了」の根拠にする
+   * （カードが1枚も作られない状態で開場しないため）。
+   */
+  private magickCommand = 'magick';
+  private magickUsable = false;
   private resultsManager: ResultsManager | null = null;
   private rankingService: RankingService | null = null; // ADDED
   private memorialCardGenerationFlags = new Map<string, 'dummy_inprogress' | 'dummy_completed' | 'ai_inprogress' | 'ai_completed'>(); // 生成状態管理フラグ
@@ -199,6 +219,23 @@ class ElectronApp {
    * 保存直後にその場で伝えるために使う。起動時ダイアログはもう過ぎているため、
    * ここで返さないと `denoise: 1` のような致命的な設定が黙って通る。
    */
+  /**
+   * ComfyUI の疎通を、少し待ちながら確かめる。
+   *
+   * 待つ理由は app-ready のコメント。**待ちすぎない**のも大事で、
+   * ここで長く待つと起動バッチの「準備確認」が伸び、当日の待ち時間になる。
+   * ComfyUI が本当に落ちている場合も、この時間で確定させる。
+   */
+  private async waitForComfyUIHealthy(): Promise<boolean> {
+    if (!this.comfyUIService) return false;
+    const deadline = Date.now() + 40_000;
+    for (;;) {
+      if (await this.comfyUIService.healthCheck()) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
+  }
+
   private async collectGenerationWarnings(): Promise<string[]> {
     const comfy = this.comfyUI;
     if (!comfy) return [];
@@ -219,7 +256,44 @@ class ElectronApp {
     }
   }
 
+  /**
+   * Electron が勝手に外へ書くものを、すべてアプリのフォルダ配下へ寄せる。
+   *
+   * ■ なぜ
+   * 当日PCは「1つのフォルダで完結」させる方針（2026-09-09 判断）。
+   * ComfyUI もアプリ本体も、当日できたデータも C:\kidspg の中だけで済ませたい。
+   * 片付けはフォルダを消すだけ、持ち帰りはフォルダを丸ごとコピーするだけ、
+   * にしたいため。
+   *
+   * ■ 何が外に出ていたか（実測 2026-09-09）
+   * 既定では %APPDATA%\<アプリ名> に Chromium の Cache / GPUCache /
+   * Local Storage / Network / Preferences などが作られる。開発機では
+   * %APPDATA%\kidspg-game-2026 に **6.8MB** 溜まっていた。
+   * ここにはカメラ権限の許可状態も入るので、消すと当日また確認が出うる。
+   *
+   * 🔴 **app が ready になる前に呼ぶこと。** ready のあとで userData を
+   * 動かしても、すでに開いた既定の場所が使われ続ける。
+   */
+  private redirectAppDataIntoAppFolder(): void {
+    try {
+      const root = path.join(this.getBundleRoot(), 'appdata');
+      // userData を動かせば配下も付いてくるが、明示しておく
+      // （Electron の版で既定の位置が変わっても外へ出ないように）。
+      app.setPath('userData', path.join(root, 'userData'));
+      app.setPath('sessionData', path.join(root, 'sessionData'));
+      app.setPath('crashDumps', path.join(root, 'crashDumps'));
+      app.setPath('logs', path.join(root, 'logs'));
+      console.log('[配置] Electron のデータ置き場:', root);
+    } catch (error) {
+      // ここで失敗しても動く（既定の場所が使われるだけ）。当日を止めるほどではない
+      console.warn('[配置] Electron のデータ置き場を変えられませんでした:', error);
+    }
+  }
+
   private initializeApp(): void {
+    // 🔴 ready より前にやる。フォルダ完結のため（理由は上のメソッド）
+    this.redirectAppDataIntoAppFolder();
+
     // 二重起動を防ぐ。ResultsManager の直列化はプロセス内にしか効かないため、
     // 2インスタンス立つと results.json の競合が復活する。
     // カメラの二重占有・ComfyUI への二重投入も防げる。
@@ -232,6 +306,14 @@ class ElectronApp {
       if (this.mainWindow) {
         if (this.mainWindow.isMinimized()) this.mainWindow.restore();
         this.mainWindow.focus();
+        // 🔴 **renderer へ「もう一度報告して」を投げる。**
+        // 起動バッチは起こす前に logs/ready.json を消し、そのあと現れるのを待つ。
+        // 報告が初回1回だけだと、すでに生きている場合に**二度と書かれず必ず
+        // 時間切れ**になる。そのため以前は「生きているときは印を消さない」形に
+        // していたが、それだと**何時間前の印でも準備完了と読んでしまう**
+        // （敵対的レビュー 2026-09-09 の指摘）。ここで測り直させることで、
+        // 「消してから待つ」を常に成り立たせる。
+        this.mainWindow.webContents.send('request-ready-report');
       }
     });
 
@@ -251,6 +333,11 @@ class ElectronApp {
     app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
     
     app.whenReady().then(async () => {
+      // 🔴 **前回の「準備OK」の印を必ず消す。**
+      // 残っていると、今回起動に失敗しても起動バッチが即座に準備完了と言ってしまう。
+      // バッチ側でも消しているが、片方に頼らない（詳細は services/readiness.ts）。
+      await clearReadiness(this.getBundleRoot());
+
       // 設定ファイルを読み込む
       this.config = await this.loadConfig();
 
@@ -275,8 +362,16 @@ class ElectronApp {
       // 前回の異常終了で残った results.json.*.tmp を掃除する
       await this.resultsManager.cleanupTempFiles();
 
-      await this.createMainWindow();
+      // 🔴 **IPC の口を先に登録する。** `loadFile` の Promise は
+      // did-finish-load（document の load 後）で解決するが、レンダラの
+      // module スクリプトと React の初回 mount / useEffect は**その前**に走る。
+      // つまり ConfigContext の getConfig() が setupIPC() より先に届き得て、
+      // その場合 invoke は「No handler registered for 'get-config'」で reject し、
+      // 赤いエラー画面のまま useReportReady が「準備完了」を報告する
+      // （敵対的レビュー 2026-09-09 の指摘）。
+      // setupIPC は window に依存しないので、順序を入れ替えれば済む。
       this.setupIPC();
+      await this.createMainWindow();
       await this.initializeServices();
       await this.checkImageMagick();
       await this.checkComfyUI();
@@ -316,6 +411,8 @@ class ElectronApp {
       globalShortcut.unregisterAll();
 
       try {
+        // 落ちているのに準備OKの印が残らないようにする
+        await clearReadiness(this.getBundleRoot());
         if (this.comfyUIService) {
           await this.comfyUIService.destroy();
         }
@@ -364,6 +461,9 @@ class ElectronApp {
       icon: path.join(__dirname, '../../../assets/icon.ico'),
       title: 'KidsPG - AIグミパク！'
     });
+
+    // 画面が落ちたら印を消し、1回だけ読み直す（watchRendererCrash の注釈）
+    this.watchRendererCrash(this.mainWindow);
 
     // 開発環境ではViteサーバー、本番環境では静的ファイルを読み込み
     if (process.env.NODE_ENV === 'development') {
@@ -509,15 +609,22 @@ class ElectronApp {
         const base64Data = imageData.replace(/^data:image\/png;base64,/, '');
         
         if (isDummy) {
-          // ダミー画像の場合、dummy_photo.pngを直接コピー
-          let dummyPhotoPath: string;
-          if (app.isPackaged) {
-            // 本番環境: exeファイルと同じディレクトリの assets フォルダ
-            dummyPhotoPath = path.join(path.dirname(app.getPath('exe')), 'assets', 'dummy_photo.png');
-          } else {
-            // 開発環境: プロジェクトルートの assets フォルダ
-            dummyPhotoPath = path.join(app.getAppPath(), 'src', 'renderer', 'assets', 'images', 'dummy_photo.png');
+          // ダミー画像の場合、dummy_photo.pngを直接コピー。
+          // 🔴 **isPackaged で分岐しない**（services/asset-locator.ts の注釈）。
+          //    以前は配布形で存在しない src/renderer/assets/images/ を指しており、
+          //    コピーに失敗して catch の base64（＝カメラが無いときは灰色の
+          //    「カメラなし」四角）が photo_*.png として残っていた
+          //    （敵対的レビュー 2026-09-09 の指摘）。
+          const dummy = locateAsset('assets/images/dummy_photo.png', {
+            bundleRoot: this.getBundleRoot(),
+            mainDir: __dirname,
+            exeDir: app.isPackaged ? path.dirname(app.getPath('exe')) : undefined,
+          });
+          if (!dummy.path) {
+            console.error('[ダミー写真] 見つかりません。探した場所:');
+            for (const s of dummy.searched) console.error('           ' + s);
           }
+          const dummyPhotoPath = dummy.path ?? '';
           
           try {
             await fs.copyFile(dummyPhotoPath, filePath);
@@ -573,21 +680,51 @@ class ElectronApp {
               const imageGeneratePath = path.join(dirPath, 'image_generate.json');
               await fs.writeFile(imageGeneratePath, JSON.stringify(workflowTemplate, null, 2));
 
-              // ComfyUIが有効な場合、即座に画像をアップロード＆変換開始
+              // ComfyUI が有効なら、写真の先渡しと変換の投入をここで始める。
+              //
+              // 🔴 **await で待たないこと。** `save-photo` の戻りを
+              // CameraPage が待ってからカウントダウンへ進むため、ここで待つと
+              // 「はい」を押した子どもが無反応の画面で待たされる。
+              // ComfyUI が前の子の推論中は HTTP 応答が数十秒止まる
+              // （comfyui-worker に実測が書いてある）ので、最悪
+              // timeouts.upload の 60 秒まで待つことになる——**前の子の生成中に
+              // 次の子が撮る**のは当日の通常状態なので、ほぼ毎回踏む
+              // （敵対的レビュー 2026-09-09 の指摘）。
+              //
+              // 🔴 **プリアップロードの失敗で変換の投入を止めないこと。**
+              // 以前は同じ try に直列に置いていたため、アップロードが1回失敗した
+              // だけで transformImage に到達せず、**その子のジョブが1件も
+              // キューに入らない**。しかも `will handle later` と書いてあるのに
+              // 後で拾う経路は無く、手掛かりは console.warn 1行だけだった。
+              // ワーカーは先渡しが無ければ自分でアップロードするので
+              // （comfyui-worker の processJob）、先渡しは**速くするための最適化**に
+              // すぎない。失敗しても投入は必ず行う。
               if (this.comfyUIService) {
-                try {
-                  // 1. プリアップロード
-                  await this.comfyUIService.preUploadImage(base64Data, dateTime);
-                  
-                  // 2. 即座に変換開始
-                  await this.comfyUIService.transformImage({
-                    imageData: base64Data,
-                    datetime: dateTime,
-                    resultDir: dirPath
-                  });
-                } catch (error) {
-                  console.warn('Pre-upload or transform failed, will handle later:', error);
-                }
+                const service = this.comfyUIService;
+                void (async () => {
+                  try {
+                    await service.preUploadImage(base64Data, dateTime);
+                  } catch (error) {
+                    // 先渡しは最適化。失敗してもワーカー側で上げ直せる
+                    console.warn('[ComfyUI] 写真の先渡しに失敗しました（ワーカー側で上げ直します）:', error);
+                  }
+                  try {
+                    await service.transformImage({
+                      imageData: base64Data,
+                      datetime: dateTime,
+                      resultDir: dirPath,
+                    });
+                  } catch (error) {
+                    // ここまで失敗するとその子はプレースホルダで確定する。
+                    // 黙って通さず、スタッフに見せる（帯は StaffNoticeBanner）
+                    console.error('[ComfyUI] 変換の投入に失敗しました:', dateTime, error);
+                    this.notifyStaff(
+                      'comfyui-submit-failed',
+                      'AI変換を開始できませんでした（' + dateTime + '）。' +
+                        'この回のカードはプレースホルダになります。ComfyUI の状態を確認してください。'
+                    );
+                  }
+                })();
               }
             } catch (error) {
               console.error('[ComfyUI] CRITICAL - Failed to process template or start transformation:', error);
@@ -616,7 +753,15 @@ class ElectronApp {
     ipcMain.handle('save-json', async (event, dirPath: string, jsonData: object) => {
       try {
         const filePath = path.join(dirPath, 'result.json');
-        await fs.writeFile(filePath, JSON.stringify(jsonData, null, 2));
+        // 🔴 **直書きしないこと。** これは後日のカード公開の正本で、ここが
+        // 書けないとその子のプレイはランキングにも履歴にも一切現れない
+        // （写真だけの孤児フォルダが残り、起動時点検も「ゲーム未完了」として
+        // 素通りする）。Windows ではランキング画面の監視・ウイルス対策・
+        // OneDrive 同期が対象を掴んで EPERM / EBUSY になる。
+        // results.json とカードパスの記録は最初からこの仕組みを通っていたのに、
+        // **正本を最初に作る書き込みだけが直書き**だった
+        // （敵対的レビュー 2026-09-09 の指摘）。
+        await writeJsonAtomic(filePath, jsonData);
         
         const dateTime = path.basename(dirPath);
         
@@ -710,7 +855,15 @@ class ElectronApp {
         
         return { success: true, filePath: filePath };
       } catch (error) {
+        // 🔴 **黙って通さない。** ここが失敗するとその子の記録が消える。
+        // 画面側は alert を出すが、子どもがそれを消してしまうので
+        // スタッフ向けの帯にも出す（消えない）。
         console.error('Failed to save JSON:', error);
+        this.notifyStaff(
+          'result-json-failed',
+          '記録の保存に失敗しました（' + path.basename(dirPath) + '）。' +
+            'この回はランキングに出ません。スタッフへ知らせてください。'
+        );
         return { success: false, error: String(error) };
       }
     });
@@ -746,6 +899,68 @@ class ElectronApp {
     });
 
     // 設定情報を取得
+    /**
+     * renderer から「画面が出て、カメラの初期化まで終わった」と報告が来たときに、
+     * main 側の事実（ComfyUI の疎通・results に書けるか）を足して ready.json を書く。
+     *
+     * これが起動バッチの「準備完了」の根拠になる。**アプリを起こしたことと、
+     * 準備できたことは別**で、以前はそこを区別していなかったため、起動に失敗しても
+     * バッチが「問題なし」と表示できてしまっていた。
+     */
+    ipcMain.handle('app-ready', async (event, info: unknown) => {
+      try {
+        const renderer = info as RendererReadiness;
+        const resultsDir = resolveResultsDir();
+        const base: Omit<ReadinessReport, 'blockers' | 'notes'> = {
+          assetsLoaded: !!renderer?.assetsLoaded,
+          cameraReady: !!renderer?.cameraReady,
+          usingDummyCamera: !!renderer?.usingDummyCamera,
+          screen: typeof renderer?.screen === 'string' ? renderer.screen : '(不明)',
+          readyAt: new Date().toISOString(),
+          appVersion: app.getVersion(),
+          packaged: app.isPackaged,
+          pid: process.pid,
+          comfyui: this.comfyUI
+            ? {
+                profile: this.comfyUI.profileName,
+                baseUrl: this.comfyUI.baseUrl,
+                // 疎通は起動時にも見ているが、ここでもう一度見る。
+                // 起動の途中で ComfyUI が落ちた場合に気づけるようにするため。
+                //
+                // ⚠️ **1回だけ聞くと、冷えた状態からの起動でほぼ必ず「繋がらない」に
+                // なる。** アプリは十数秒で画面を出すが、ComfyUI は待受を始めてから
+                // モデルの読み込みで1〜2分かかり、そのあいだ /system_stats は
+                // 返ってこない（2026-09-09 に実機で確認: ログに Starting server が
+                // 出ているのに判定は「繋がりません」だった）。
+                // 毎回出る注意は読み飛ばされるようになるので、少し待って聞き直す。
+                healthy: await this.waitForComfyUIHealthy(),
+              }
+            : null,
+          results: { dir: resultsDir, writable: await checkResultsWritable(resultsDir) },
+          // 🔴 config が読めたか。読めないと画面は TOP まで出るのに遊べない
+          configLoaded: !!this.config,
+          memorialCard: {
+            ready: !!this.memorialCardService,
+            magickCommand: this.magickCommand,
+            magickUsable: this.magickUsable,
+          },
+        };
+        const { blockers, notes } = classifyReadiness(base);
+        const report: ReadinessReport = { ...base, blockers, notes };
+        await writeReadiness(this.getBundleRoot(), report);
+        if (blockers.length === 0 && notes.length === 0) {
+          console.log('[準備確認] 準備OK');
+        }
+        for (const b of blockers) console.error('[準備確認] 遊べません: ' + b);
+        for (const n of notes) console.warn('[準備確認] 気になる点: ' + n);
+        return { success: true, blockers, notes };
+      } catch (error) {
+        // 印を書けなくてもゲームは動く。バッチが「確かめられなかった」と言うだけにする
+        console.error('[準備確認] ready.json を書けませんでした:', error);
+        return { success: false, error: String(error) };
+      }
+    });
+
     ipcMain.handle('get-config', () => {
       return this.config;
     });
@@ -753,11 +968,18 @@ class ElectronApp {
     // 設定ファイルを再読み込み
     ipcMain.handle('reload-config', async () => {
       try {
+        const previous = this.config;
         this.config = await this.loadConfig();
+        // 保持件数（results.maxRecent / maxRanking）を読み直した値へ揃える
+        this.resultsManager?.updateConfig(this.config);
         // 解決済みの ComfyUI 設定も作り直す。ここを忘れると、手で config.json を
         // 編集して再読み込みしても生成パラメータが古いまま使われる
         const restartRequired = this.refreshResolvedComfyUI();
-        const warnings = await this.collectGenerationWarnings();
+        const warnings = [
+          ...(await this.collectGenerationWarnings()),
+          // 手でエディタから触った分もここで拾う（設定画面からの保存と同じ扱い）
+          ...collectBalanceWarnings(previous, this.config),
+        ];
         return { success: true, config: this.config, restartRequired, warnings };
       } catch (error) {
         console.error('設定ファイルの再読み込みに失敗しました:', error);
@@ -799,6 +1021,8 @@ class ElectronApp {
         await fs.rename(tempPath, configPath);
 
         this.config = nextConfig as unknown as AppConfig;
+        // 保持件数（results.maxRecent / maxRanking）を保存した値へ揃える
+        this.resultsManager?.updateConfig(this.config);
 
         // 生成パラメータは撮影のたびにテンプレートを読み直して適用するため、
         // ここで解決結果を差し替えるだけで次のプレイから効く。
@@ -808,9 +1032,13 @@ class ElectronApp {
         const warnings = [
           ...(this.comfyUI?.warnings ?? []),
           ...(await this.collectGenerationWarnings()),
+          // 🔴 「クリア面数＝ランク＝カード背景」の対応が崩れうる変更を必ず言う。
+          // 縛っているのは npm test だけで、当日 CLI は叩けない
+          // （理由は services/balance-warnings.ts）。
+          ...collectBalanceWarnings(currentRaw, nextConfig),
         ];
         for (const warning of warnings) {
-          console.warn('[ComfyUI] 生成パラメータの警告:', warning);
+          console.warn('[設定] 保存時の警告:', warning);
         }
 
         return { success: true, config: this.config, restartRequired, warnings };
@@ -842,11 +1070,12 @@ class ElectronApp {
           generation: comfy.generation,
         });
 
-        // 本番は exe と同じ場所（Program Files 配下だと EPERM で書けない）を避け、
-        // OS のテンポラリへ出す。開く場所は showItemInFolder が案内する。
-        const outDir = app.isPackaged
-          ? path.join(app.getPath('temp'), 'kidspg-workflow')
-          : path.join(this.getBundleRoot(), 'tmp');
+        // アプリのフォルダ配下へ出す。**OS のテンポラリへ出さない**——
+        // 当日PCは1つのフォルダで完結させる方針なので、書き出したものが
+        // %TEMP% に散るのを避ける（フォルダを消せば片付く状態を保つ）。
+        // 以前は本番だけ app.getPath('temp') を使っていたが、当日は
+        // Program Files 配下に置かない（C:\kidspg\app）ので EPERM の心配は無い。
+        const outDir = path.join(this.getBundleRoot(), 'tmp');
         await fs.mkdir(outDir, { recursive: true });
         const outPath = path.join(outDir, `comfyui-workflow-${comfy.profileName}.json`);
         await fs.writeFile(outPath, JSON.stringify(workflow, null, 2) + '\n', 'utf-8');
@@ -884,6 +1113,55 @@ class ElectronApp {
         console.error('ComfyUI の画面を開けませんでした:', error);
         return { success: false, error: String(error) };
       }
+    });
+
+    // ComfyUI を起動する（起動バッチを、開いたままの PowerShell ウィンドウで走らせる）。
+    // **叩くのは config.json で解決したパスだけ**。画面からパスは受け取らない。
+    ipcMain.handle('comfyui-launch', async () => {
+      const paths = this.comfyUI?.paths;
+      if (!paths) {
+        return {
+          success: false,
+          error:
+            'いま選ばれているプロファイル（' +
+            (this.comfyUI?.profileName ?? '不明') +
+            '）には ComfyUI の物理パスが設定されていません。' +
+            '別の機体で動かしている場合はそちらで起動してください',
+        };
+      }
+      // すでに応答しているなら起動しない。二重に立てるとポートが埋まっていて
+      // 後から立てたほうが即座に落ちるだけだが、窓が増えてどれが本体か分からなくなる。
+      if (this.comfyUIService && (await this.comfyUIService.healthCheck())) {
+        return { success: true, alreadyRunning: true, startBat: paths.startBat };
+      }
+      const outcome = await launchComfyUI(paths);
+      if (!outcome.success) {
+        console.error('[ComfyUI] 起動に失敗:', outcome.error);
+      } else {
+        console.log('[ComfyUI] 起動バッチを実行しました:', outcome.startBat);
+      }
+      return { ...outcome, alreadyRunning: false };
+    });
+
+    // ComfyUI の input / output フォルダをエクスプローラーで開く。
+    // 当日「写真が上がっているか」「絵が出ているか」を目で確かめるための入口。
+    ipcMain.handle('comfyui-open-folder', async (event, which: unknown) => {
+      const paths = this.comfyUI?.paths;
+      if (!paths) {
+        return { success: false, error: 'ComfyUI の物理パスが設定されていません' };
+      }
+      // 開けるのは2箇所だけ。レンダラから任意のパスは受け取らない
+      if (which !== 'input' && which !== 'output') {
+        return { success: false, error: '開けるのは input / output だけです' };
+      }
+      const target = which === 'input' ? paths.input : paths.output;
+      const failure = await shell.openPath(target);
+      // openPath は失敗を**例外ではなく文字列**で返す（空文字なら成功）
+      if (failure) {
+        console.error('[ComfyUI] フォルダを開けませんでした:', target, failure);
+        return { success: false, error: target + ' を開けませんでした: ' + failure };
+      }
+      return { success: true, path: target };
     });
 
     // ComfyUI画像変換リクエスト
@@ -973,94 +1251,34 @@ class ElectronApp {
       }
     });
 
-    // 新しいIPCハンドラ: アセットの絶対パスを取得
+    /**
+     * アセットの絶対パスを返す。
+     *
+     * 🔴 **`app.isPackaged` で分岐しない。** 当日PC は「electron 本体で dist を
+     * 読む」形なので `isPackaged === false` になるが `src/` は配っていない。
+     * 以前は isPackaged を見て開発側の枝に入り、存在しない
+     * `<app>\src\renderer\assets\sounds\bell.mp3` を（console.error だけ出して）
+     * そのまま返していた。開発機には `src/` があるため通ってしまい、
+     * **当日PC でだけ効果音10個とタイトル画像が全滅する**壊れ方だった
+     * （敵対的レビュー 2026-09-09 の指摘）。
+     *
+     * 判断は services/asset-locator.ts に集約し、ここは
+     * 「見つからなかったことを黙って通さない」だけを持つ。
+     */
     ipcMain.handle('get-asset-absolute-path', async (event, relativePath: string) => {
-      
-      try {
-        let assetPath: string;
-        
-        if (app.isPackaged) {
-          // 本番環境: ASARパッケージ内のdist/renderer/assetsフォルダのアセットにアクセス
-          // relativePath例: "assets/sounds/action.mp3" -> "dist/renderer/assets/action.mp3"
-          const assetFileName = relativePath.replace(/^assets\/(sounds|images)\//, '');
-          
-          assetPath = path.join(__dirname, '../../renderer/assets', assetFileName);
-          
-          // ファイル存在確認
-          try {
-            await fs.access(assetPath);
-          } catch (accessError) {
-            console.error(`main.ts: [PACKAGED] ❌ Asset file NOT FOUND: ${assetPath}`);
-            console.error(`main.ts: [PACKAGED] Access error:`, accessError);
-            
-            // 代替パスをいくつか試行
-            const alternativePaths = [
-              path.join(__dirname, '../renderer/assets', assetFileName),
-              path.join(__dirname, 'renderer/assets', assetFileName),
-              path.join(__dirname, '../../assets', assetFileName),
-              path.join(path.dirname(app.getPath('exe')), 'resources', relativePath)
-            ];
-            
-            let foundAlternative = false;
-            
-            for (const altPath of alternativePaths) {
-              try {
-                await fs.access(altPath);
-                assetPath = altPath;
-                foundAlternative = true;
-                break;
-              } catch {
-                // Continue to next alternative
-              }
-            }
-            
-            if (!foundAlternative) {
-              console.error(`main.ts: [PACKAGED] CRITICAL - No valid asset path found for: ${relativePath}`);
-            }
-          }
-        } else {
-          // 開発環境: src/renderer/assetsフォルダのアセットにアクセス
-          assetPath = path.join(app.getAppPath(), 'src/renderer', relativePath);
-          
-          // 開発環境でもファイル存在確認
-          try {
-            await fs.access(assetPath);
-          } catch (accessError) {
-            console.error(`main.ts: [DEV] ❌ Asset file NOT FOUND: ${assetPath}`);
-            console.error(`main.ts: [DEV] Access error:`, accessError);
-          }
-        }
-        
-        return assetPath;
-        
-      } catch (error) {
-        console.error('main.ts: CRITICAL - Error resolving asset path:', error);
-        console.error('main.ts: Error details:', {
-          type: typeof error,
-          name: error instanceof Error ? error.name : 'Unknown',
-          message: error instanceof Error ? error.message : String(error)
-        });
-        
-        // フォールバック: 従来の方法
-        const appPath = app.isPackaged
-          ? path.dirname(app.getPath('exe'))
-          : app.getAppPath();
+      const found = locateAsset(relativePath, {
+        bundleRoot: this.getBundleRoot(),
+        mainDir: __dirname,
+        exeDir: app.isPackaged ? path.dirname(app.getPath('exe')) : undefined,
+      });
+      if (found.path) return found.path;
 
-        const resourcesPath = app.isPackaged
-          ? path.join(appPath, 'resources')
-          : appPath;
-
-        const absoluteAssetPath = path.join(resourcesPath, relativePath);
-        
-        // フォールバックパスも存在確認
-        try {
-          await fs.access(absoluteAssetPath);
-        } catch (fallbackError) {
-          console.error(`main.ts: [FALLBACK] ❌ Fallback path also not found: ${absoluteAssetPath}`, fallbackError);
-        }
-        
-        return absoluteAssetPath;
-      }
+      // 🔴 見つからないまま「それらしいパス」を返してはいけない。
+      //    呼び出し側（renderer）は throw を拾って
+      //    markBackgroundPreloadFailed() を立て、ready.json の blockers に載る。
+      console.error(`[アセット] 見つかりません: ${relativePath}`);
+      for (const s of found.searched) console.error(`           探した場所: ${s}`);
+      throw new Error(`アセットが見つかりません: ${relativePath}`);
     });
 
     // 画像のデータURLを取得する
@@ -1129,19 +1347,47 @@ class ElectronApp {
    * ランキングが全部ダミー写真になるまで気付けない。
    */
   private async checkImageMagick(): Promise<void> {
+    // 🔴 **PATH 任せで探さない。** 当日PC の ImageMagick は PATH に入っていない
+    //    携帯版で、しかもアプリは WMI 経由で起こされるため起動バッチが足した
+    //    PATH を受け取れない（services/magick-path.ts の注釈）。
+    //    以前はここで shell 経由の 'magick' を叩いていたため、
+    //    **開発機では通り、当日PC では必ず落ちる**という見え方になっていた。
+    const resolution = resolveMagick([this.getBundleRoot()]);
+    this.magickCommand = resolution.command;
+    // 🔴 **合成の一時ファイルもフォルダの中へ向ける。** 起動バッチも渡してくるが、
+    //    WMI 経由の起動では届かないことがあり、直接ダブルクリックされた場合は
+    //    そもそも誰も設定しない。既定のままだと %TEMP% に大きな中間画像が出て、
+    //    「1つのフォルダで完結」という当日の方針が崩れる（片付けはフォルダを
+    //    消すだけ、持ち帰りは丸ごとコピーだけ、を保つため）。
+    //    magick は子プロセスなので process.env をそのまま受け継ぐ。
+    if (!process.env.MAGICK_TEMPORARY_PATH) {
+      const tmpDir = path.join(this.getBundleRoot(), 'tmp');
+      try {
+        await fs.mkdir(tmpDir, { recursive: true });
+        process.env.MAGICK_TEMPORARY_PATH = tmpDir;
+        console.log('MAGICK_TEMPORARY_PATH: ' + tmpDir);
+      } catch (error) {
+        console.warn('tmp を作れないので既定の一時フォルダを使います:', error);
+      }
+    }
     try {
       const { spawn } = await import('child_process');
       await new Promise<void>((resolve, reject) => {
-        const proc = spawn('magick', ['-version'], { shell: true });
+        // shell: false。絶対パスに空白が入るので shell を挟むと壊れる
+        const proc = spawn(resolution.command, ['-version'], { shell: false });
         proc.on('error', reject);
         proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
       });
-      console.log('ImageMagick: OK');
+      this.magickUsable = true;
+      console.log(`ImageMagick: OK (${resolution.from}) ${resolution.command}`);
     } catch (error) {
-      console.error('ImageMagick(magick) が見つかりません。記念カードは生成されません。', error);
+      this.magickUsable = false;
+      console.error('ImageMagick(magick) を起動できません。記念カードは生成されません。', error);
+      console.error('  探した場所: ' + (resolution.searched.join(' / ') || '(PATH のみ)'));
       this.warnAtStartup(
         'imagemagick-missing',
-        'ImageMagick が見つかりません。記念カードが作られません。PATH を確認してください。'
+        'ImageMagick を起動できません（' + resolution.command + '）。' +
+          '記念カードが1枚も作られません。当日PCでは bin\\ImageMagick\\magick.exe を使います。'
       );
     }
   }
@@ -1171,7 +1417,15 @@ class ElectronApp {
     // 輪郭以外まったく反映されていない絵が全員に出る。静かに劣化するので必ず知らせる。
     await this.checkGenerationSettings(comfy);
 
-    const healthy = await this.comfyUIService.healthCheck();
+    // ⚠️ **1回だけ聞いてはいけない。** バッチはポートの待受までしか待たず、
+    // ComfyUI は待受を始めてからモデルの読み込みで1〜2分は /system_stats を
+    // 返さない。1回きりで判断すると、朝いちばんの起動でほぼ必ず
+    // 「接続できません」のモーダルがゲーム画面を覆い、OK を押すまで操作できない。
+    // 一方 app-ready 側は待ってから healthy: true を書くので、
+    // **「★★★ 準備完了 ★★★（注意0件）」と言われた画面の上に赤い警告が出る**
+    // という食い違いが起きていた（敵対的レビュー 2026-09-09 の指摘）。
+    // 判定の待ち方を app-ready と揃える。
+    const healthy = await this.waitForComfyUIHealthy();
     if (healthy) {
       console.log(`ComfyUI: OK (${comfy.baseUrl} / プロファイル ${comfy.profileName})`);
       return;
@@ -1228,14 +1482,36 @@ class ElectronApp {
   /**
    * 起動時の警告をスタッフに届ける。
    *
-   * renderer への 'startup-warning' は現状どの画面も購読していないため、
-   * それだけでは誰にも見えない。確実に気づけるよう OS のダイアログも出す。
+   * renderer への 'startup-warning' は components/StaffNoticeBanner が購読して
+   * 画面の上端に帯で出す。ただし帯だけだとプレイ中に見落とすので、
+   * 起動時の警告は OS のダイアログも併せて出す。
    *
    * ・親ウィンドウを渡してモーダルにする。渡さないと独立ウィンドウとして開き、
    *   スタッフが気づく前に子どもがそのまま遊び始められる。
    * ・await せずチェーンに積むのは、ダイアログを閉じるまでアプリの初期化を止めないため。
    *   複数の警告（ImageMagick 欠落と ComfyUI 未接続）が同時に出ても重ならないよう直列化する。
    */
+  /**
+   * 稼働中の出来事をスタッフへ知らせる（画面上端の帯だけ。OS ダイアログは出さない）。
+   *
+   * 🔴 **プレイ中に OS のモーダルを出してはいけない。** 子どもの操作が止まる。
+   * だから起動時の `warnAtStartup` とは分けてある。
+   *
+   * ■ なぜ要るのか（敵対的レビュー 2026-09-09 の指摘）
+   * 稼働中の ComfyUI 障害（ワーカーの死亡・ジョブの失敗・投入の失敗）は
+   * `comfyui-error` / `comfyui-job-error` で renderer へ送っていたが、
+   * **購読者はテスト画面だけ**で本番画面には無かった。以後、撮影は通り
+   * カードはプレースホルダで出続け、**誰も気づかないまま数十人ぶんが
+   * プレースホルダになる**。同じ壊れ方（startup-warning に購読者が無かった）を
+   * 一度直したのに、稼働中の経路だけが素通りしていた。
+   */
+  private notifyStaff(kind: string, message: string): void {
+    console.warn('[スタッフへ] ' + message);
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send('startup-warning', { kind, message });
+    }
+  }
+
   private warnAtStartup(kind: string, message: string): void {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send('startup-warning', { kind, message });
@@ -1266,18 +1542,75 @@ class ElectronApp {
     this.setupRankingWatcher();
   }
 
+  /**
+   * レンダラ（画面）が落ちたことを印に反映する。
+   *
+   * 🔴 **落ちても window は残るので `window-all-closed` は来ない。**
+   * 以前はそのため `ready.json` が「準備完了」のまま残り、
+   * 真っ白な画面を見てバッチを叩き直しても、既存プロセスが生きているので
+   * second-instance → 死んだレンダラへ `request-ready-report` を送るだけ
+   * （届かない）→ 90 秒待って「報告がありません」で終わっていた。
+   * 原因がどこにも出ないのがいちばん困るので、
+   *   ・印を消す（次のバッチが古い印を信じない）
+   *   ・1回だけ読み直す（一過性の GPU クラッシュから自力で戻れる）
+   *   ・スタッフに見せる
+   * の3つをする（敵対的レビュー 2026-09-09 の指摘）。
+   */
+  private watchRendererCrash(window: BrowserWindow): void {
+    let reloadedOnce = false;
+    window.webContents.on('render-process-gone', (_event, details) => {
+      console.error('[画面] レンダラが落ちました:', details.reason, details.exitCode);
+      void clearReadiness(this.getBundleRoot());
+      if (!reloadedOnce && details.reason !== 'clean-exit') {
+        reloadedOnce = true;
+        console.error('[画面] 1回だけ読み直します');
+        try {
+          window.webContents.reload();
+        } catch (error) {
+          console.error('[画面] 読み直しに失敗しました:', error);
+        }
+        return;
+      }
+      this.warnAtStartup(
+        'renderer-gone',
+        'ゲーム画面が落ちました（' + details.reason + '）。' +
+          'いったんアプリを終了し、start-kidspg.bat をもう一度実行してください。'
+      );
+    });
+    window.webContents.on('unresponsive', () => {
+      console.error('[画面] レンダラが応答しません');
+      void clearReadiness(this.getBundleRoot());
+    });
+  }
+
   private async initializeMemorialCardService(): Promise<void> {
     try {
       if (!this.config?.memorialCard) {
+        // 🔴 **黙って return してはいけない。** ここを通ると save-json の
+        //    カード生成ブロックが丸ごと飛び、プレイは成立してランキングにも
+        //    出るのに**全員のカードが存在しない**状態になる。
+        //    以前は警告もログも無く、当日は持ち帰るものが無いことに
+        //    閉場まで気づけなかった（敵対的レビュー 2026-09-09 の指摘）。
+        console.error('[記念カード] config.json に memorialCard がありません。カードは作られません');
+        this.warnAtStartup(
+          'memorial-card-config-missing',
+          'config.json に memorialCard の設定がありません。記念カードが1枚も作られません。'
+        );
         return;
       }
 
       this.memorialCardService = new MemorialCardService(
         this.config.memorialCard,
-        this.mainWindow || undefined
+        this.mainWindow || undefined,
+        // 携帯版 ImageMagick を探す起点。当日PC は <app>\..\bin\ImageMagick
+        this.getBundleRoot()
       );
     } catch (error) {
       console.error('Memorial Card Service initialization failed:', error);
+      this.warnAtStartup(
+        'memorial-card-init-failed',
+        '記念カードの初期化に失敗しました。カードが作られません: ' + String(error)
+      );
       this.memorialCardService = null;
     }
   }
@@ -1363,12 +1696,29 @@ AI変換なしで動作します。`);
       return; // すでに処理済み／処理中
     }
 
-    if (currentState !== 'dummy_completed') {
-      // ダミーカードがまだできていない＝AI変換が先に終わった。
-      // 捨てずに保持しておき、ダミー完成後に必ず消化する。
+    if (currentState === 'dummy_inprogress') {
+      // プレースホルダ版の合成中。いま本カードを作ると、あとから終わった
+      // ダミーが上書きしうるので保留し、そちらの完了時に消化してもらう
+      // （save-json のコールバックが成功・失敗・例外のどの枝でも消化する）。
       this.pendingAICompletions.set(dateTime, jobId);
-      console.log(`ElectronApp - AI card completion is pending until the dummy card is ready: ${dateTime} (state: ${currentState})`);
+      console.log(`ElectronApp - AI card completion is pending until the dummy card is ready: ${dateTime}`);
       return;
+    }
+
+    // 🔴 **`dummy_completed` 以外を全部保留にしてはいけない。**
+    // プレースホルダ版の合成が失敗するとフラグは削除され（state = undefined）、
+    // その場で保留を見にいくが、AI変換は約170秒かかるので**まだ届いていない**。
+    // 1分後に届いた完了は「dummy_completed ではない」として保留に積まれ、
+    // 消化はそのコールバックの中にしか無いので**誰も消化しない**——
+    // プレースホルダ版も本カードも無い、**カードが1枚も存在しない子**が
+    // 当日ひとり出来ていた（敵対的レビュー 2026-09-09 の指摘）。
+    // 合成の失敗は絵空事ではない（OneDrive・ウイルス対策・ランキング画面の
+    // 監視による共有違反で rename が落ちる。card-output に実測がある）。
+    // ダミーが無くても本カードは単体で作れるので、ここは進める。
+    if (currentState === undefined) {
+      console.warn(
+        `ElectronApp - プレースホルダ版カードが無い状態でAI完了を受けました。本カードだけ作ります: ${dateTime}`
+      );
     }
 
     await this.runAIMemorialCard(jobId, resultDir, dateTime);

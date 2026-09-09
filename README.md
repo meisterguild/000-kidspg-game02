@@ -13,6 +13,7 @@ KidsPG フェスいたみ（2026年9月12日）向けのイベント用アプリ
 
 - [システム構成](#システム構成)
 - [動作要件](#動作要件)
+- [リポジトリに含まれないもの（別途用意が必要）](#リポジトリに含まれないもの別途用意が必要)
 - [起動方法（動作確認はここだけ読めば足ります）](#起動方法動作確認はここだけ読めば足ります)
 - [検証ツール](#検証ツール)
 - [1プレイの流れ](#1プレイの流れ)
@@ -82,7 +83,7 @@ flowchart LR
 2. `npm ci` で依存を入れる
 3. AI変換まで試すなら **ComfyUI** を用意する。手順とモデルの入手先は
    **[docs/comfyui-local-setup.md](docs/comfyui-local-setup.md)** にまとめてある
-   （DreamShaper 8 / Hyper-SD15-8steps-CFG-lora / ControlNet Canny の3つが要る）
+   （DreamShaper 8 / sd-vae-ft-mse / ControlNet Canny / Hyper-SD15-8steps-CFG-lora の4本が要る）
 4. ComfyUI の場所が違う場合は `config.json` の
    `comfyui.profiles.local.baseUrl` を自分の環境に合わせる
 5. `npm start`
@@ -96,6 +97,72 @@ AI変換を飛ばしても **ゲーム・カード・ランキングは動きま
 
 ---
 
+## リポジトリに含まれないもの（別途用意が必要）
+
+**このリポジトリにあるのはソースと設定だけです。** 以下は clone しても付いてきません。
+
+### ソフトウェア
+
+| 必要なもの | 版 | 確認コマンド | 無いとどうなるか |
+|---|---|---|---|
+| Node.js | 20 以上（v24.16.0 で動作確認） | `node -v` | ビルドも起動もできない |
+| **ImageMagick 7** | `magick` が PATH にあること | `magick -version` | **カードが1枚も出ない** |
+| Python | 3.12（ComfyUI の venv 用） | `python --version` | AI変換が使えない |
+| ComfyUI | 0.34.0 で動作確認 | `curl http://127.0.0.1:8188/system_stats` | AI変換が使えない（ゲームは動く） |
+| PyTorch | CPU 版 or CUDA 版 | — | ComfyUI が起動しない |
+| Meiryo（`C:/Windows/Fonts/meiryo.ttc`） | Windows 同梱 | — | カードの文字が描けない |
+
+**カスタムノードは1つも要りません。** ワークフローは ComfyUI の標準ノードだけで
+組んであります（当日PCに追加インストールを要求しないため）。
+
+構築手順は **[docs/comfyui-local-setup.md](docs/comfyui-local-setup.md)** にあります。
+
+### AI モデル（合計 約4.1GB）
+
+`config.json` の `activeProfile` が **`local`（CPU実行・SD1.5）** のとき必要なのは
+次の4本です。**名前とフォルダを変えないこと**——
+`assets/ComfyUI_KidsPG_2026_local.json` がこの名前で参照しており、
+違うと ComfyUI が「モデルが無い」で失敗して全員のカードがプレースホルダのままになります。
+
+| 置き場所 | ファイル名 | サイズ | 入手元 |
+|---|---|---:|---|
+| `models/checkpoints/` | `DreamShaper_8_pruned.safetensors` | 2,132,625,894 | [Lykon/DreamShaper](https://huggingface.co/Lykon/DreamShaper) |
+| `models/vae/` | `sd-vae-ft-mse.safetensors` | 334,643,276 | [stabilityai/sd-vae-ft-mse](https://huggingface.co/stabilityai/sd-vae-ft-mse) の `diffusion_pytorch_model.safetensors` を改名 |
+| `models/controlnet/` | `control_v11p_sd15_canny.safetensors` | 1,445,157,124 | [lllyasviel/sd-controlnet-canny](https://huggingface.co/lllyasviel/sd-controlnet-canny) の `diffusion_pytorch_model.safetensors` を改名 |
+| `models/loras/` | `Hyper-SD15-8steps-CFG-lora.safetensors` | 269,127,064 | [ByteDance/Hyper-SD](https://huggingface.co/ByteDance/Hyper-SD) |
+
+一括で取るスクリプトを用意しています（サイズ検証つき）。
+
+```bash
+bash tools/dl-models-local.sh C:/WORK/AI/models
+```
+
+> **社内 LAN の AI サーバーからは、いまこの4本は取れません。**
+> 2026-09-08 に確認した時点で、共有ストアにあるのは `server` プロファイル用の
+> SDXL だけでした（詳細と確認方法は
+> [docs/comfyui-local-setup.md](docs/comfyui-local-setup.md)）。
+> LAN から取れるようになれば `bash tools/fetch-models.sh C:/WORK/AI/models local` が使えます。
+
+> サイズは 2026-09-08 に実機のファイルと HuggingFace の `Content-Length` が
+> **バイト単位で一致することを確認**した値です。ダウンロード後に検証するので、
+> 途中で切れたファイルを掴んだままにはなりません。
+
+`steps: 8` は **Hyper-SD の LoRA が 8 ステップ前提**だからです。下げると絵が崩れます。
+
+### GPU 機で動かす場合（`server` プロファイル）
+
+SDXL の別セット（合計 約10.6GB）が必要です。`tools/dl-models.sh` があります
+（社内 AI サーバーから取る `tools/fetch-models.sh` もありますが、社外では使えません）。
+期待サイズは [docs/comfyui-local-setup.md](docs/comfyui-local-setup.md) に記載しています。
+
+### ハードウェア
+
+| | 内容 |
+|---|---|
+| Webカメラ | 無くてもダミー写真モードで動きます（[制約あり](#カメラが無い場合)） |
+| GPU | 無くても動きます。**CPU実行だと1枚あたり約170秒**かかります（この開発機 Intel Core 7 150U での実測） |
+
+
 ## 起動方法（動作確認はここだけ読めば足ります）
 
 ### 手順
@@ -107,6 +174,9 @@ npm ci
 # 1. ComfyUI を起動する（AI変換を使う場合。使わないなら飛ばしてよい）
 #    別ウィンドウで実行し、起動しっぱなしにする
 C:\WORK\AI\ComfyUI_20260902_0.34.0\ComfyUI\start-comfyui.bat
+
+#    アプリの「テスト・設定」ページの［ComfyUI を起動する］でも同じことができます
+#    （設定の「ComfyUI の場所（物理パス）」を参照）
 
 #    起動完了の確認（JSON が返れば OK。初回は数分かかります）
 curl http://127.0.0.1:8188/system_stats
@@ -122,7 +192,7 @@ npm start
 
 1. TOP 画面 →「はじめる」
 2. 撮影画面でニックネームを選んで撮影
-3. カウントダウン → パズル（90秒）
+3. カウントダウン → パズル（120秒）
 4. 結果画面 → **カードが `results/<日時>/memorial_card_<日時>.png` に出力される**
 5. ランキング画面にカードが並ぶ
 
@@ -234,6 +304,46 @@ node --test tools/test-workflow-template.cjs tools/test-magick-script.cjs
   増やしても速くならずキューに積まれるだけです
 
 **AI変換を当日オフにする**には `comfyui` セクションごと外してアプリを再起動します。
+
+### ComfyUI の場所（物理パス）
+
+**同一PCで ComfyUI を動かしているプロファイルにだけ** `paths` を書きます。
+アプリと ComfyUI のやり取りは `baseUrl`（HTTP）で足りていて、ここは
+**アプリから ComfyUI を起こす**ためと、当日 input / output を目で確かめるためだけに使います。
+
+```json
+"local": {
+  "baseUrl": "http://127.0.0.1:8188",
+  "paths": {
+    "root":     "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI",
+    "input":    "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\input",
+    "output":   "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\output",
+    "startBat": "start-comfyui.bat"
+  }
+}
+```
+
+- `root` は**絶対パス必須**。相対で書くと Electron の作業フォルダを基準に解決されて
+  見当違いの場所を掘るので、**使わずに起動時の警告へ回します**
+- `input` / `output` / `startBat` は省略か `root` からの相対でよい。省略すると
+  `root\input` / `root\output` / （起動ボタンなし）になります。
+  **ComfyUI を新しい版へ差し替えたときは `root` の1行だけ直せば足ります**
+- `server` プロファイルには**書きません**。別の機体なので、この PC からは起動もフォルダも開けません
+- プロファイル側に `paths` があれば、共通側とは**混ぜず丸ごとそちらを使います**。
+  `root` だけ差し替えて `input` を共通側から拾うと、別の版フォルダの input を見にいく
+  組み合わせができてしまうためです
+
+テスト・設定ページに次のボタンが出ます。
+
+| ボタン | すること |
+|---|---|
+| ［ComfyUI を起動する］ | `startBat` を **開いたままの PowerShell ウィンドウ**で実行する。すでに応答していれば起動しない |
+| ［input を開く］ / ［output を開く］ | そのフォルダをエクスプローラーで開く |
+
+**PowerShell の窓は意図的に閉じません**（`-NoExit`）。ComfyUI はモデルの読み込みに
+数十秒かかり、失敗したときの理由もその窓の中にしか出ません。当日スタッフはログファイルを
+開けないので、画面に残っているのが唯一の手がかりになります。ComfyUI を止めるのも
+その窓を閉じる操作です。アプリを終了しても ComfyUI は動き続けます（逆も同じ）。
 
 ### 1枚あたりの生成時間と、間に合わないときの退避
 
@@ -430,7 +540,7 @@ kidspg-game-2026/
 | `compare-generation.cjs` | 同じ写真・同じシードで生成パラメータだけ変えて画質を見比べる |
 | `e2e-local-play.cjs` | 実アプリを CDP で駆動する通しテスト |
 | `retry-failed.cjs` | 生成に失敗したプレイの救済（A: AI画像の再投入 / B: カード再合成 / C: パス張り直し） |
-| `purge-photos.cjs` | results から**生の顔写真だけ**を消す（既定はドライラン） |
+| `purge-photos.cjs` | results と **ComfyUI の input/output** から生の顔写真を消す（既定はドライラン） |
 | `place-regen-bat.cjs` | 各結果フォルダへ「再生成.bat」を置く（retry-failed の薄いラッパ） |
 | `test-workflow-template.cjs` | ワークフロー置換・「アプリ側との約束」の単体テスト |
 | `test-magick-script.cjs` | ImageMagick スクリプト生成の単体テスト |
@@ -439,6 +549,7 @@ kidspg-game-2026/
 | `test-retry-failed.cjs` | 救済ツール・救済スクリプトの単体テスト（保守ロックの取り合いを含む） |
 | `test-config-writer.cjs` | 設定の書き戻し（型・範囲の検査）の単体テスト |
 | `test-purge-photos.cjs` | 写真削除ツールの単体テスト（隔離したフォルダで確認） |
+| `test-comfyui-paths.cjs` | ComfyUI の物理パスの解決と、起動コマンドの単体テスト |
 | `test-regen-bat.cjs` | 再生成バッチの単体テスト（CRLF・ASCII 先頭・委譲） |
 | `test-rank-and-level.cjs` | ランクとレベルの計算の単体テスト |
 | `test-solve-stage.mjs` | 難易度ソルバの単体テスト（正解が自明な小グラフ） |
@@ -447,8 +558,24 @@ kidspg-game-2026/
 | `test-exit-path.cjs` | 終了経路の配線（確認ダイアログ・プロセスが残らないこと）の検査 |
 | `test-stage-balance.mjs` | ステージ構成とランク閾値・難所の数の対応の検査 |
 | `measure-stages.mjs` | 盤面生成の実測（グミ数・難所の数・閾値の候補） |
+| `make-onsite-package.cjs` | 当日PC向けの持ち出しパッケージを作る（USB 用） |
+| `onsite-package-lib.cjs` | パッケージの組み立ての決めごと（何を入れ、何を落とすか） |
+| `onsite-materials.json` | リポジトリの外の資材の入手元と期待サイズ |
+| `onsite/0_setup.bat` | 当日PCで実行するセットアップ（コピーと点検だけ） |
+| `onsite/verify-copy.ps1` | `SHA256SUMS` と突き合わせてコピー漏れ・破損を見つける（0_setup が呼ぶ） |
+| `onsite/build-materials.ps1` | **開発機で**リポジトリ外の資材を組む（埋め込み Python・ComfyUI 複製・Node・ImageMagick・VC++） |
+| `onsite/warmup.bat` | 前日までにネット有りで通す暖機（1枚生成 → Smart App Control のブロック件数を報告） |
+| `onsite/check-sac-blocks.ps1` | Smart App Control / Code Integrity のブロックを数える（warmup と起動バッチが呼ぶ） |
+| `lib/resolve-results-dir.cjs` | `results/` の場所を決める判断を1か所に集めたもの（開発機と配布された `ops/` の両方に対応） |
+| `lib/comfyui-scratch.cjs` | ComfyUI の `input/` `output/` を数える・消す（🔴 全員の顔写真が溜まる場所） |
+| `test-onsite-package.cjs` | パッケージの組み立ての決めごとの単体テスト |
+| `test-readiness.cjs` | 「準備完了」の判定と、起動バッチとの取り決めの単体テスト |
 | `notify.sh` | 作業の節目をスマホへ通知（ntfy） |
-| `fetch-models.sh` | AIサーバーからモデルを取り込む |
+| `make-assets.sh` | 画面素材の下ごしらえ（開発時のみ） |
+| `make-cards.sh` | 記念カードの土台画像の下ごしらえ（開発時のみ） |
+| `dl-models-local.sh` | **local プロファイル用（SD1.5・4本）** のモデルを HuggingFace から取得（サイズ検証つき） |
+| `dl-models.sh` | server プロファイル用（SDXL・5本）のモデルを HuggingFace から取得 |
+| `fetch-models.sh` | 社内 AI サーバーからモデルを取り込む（社外では使えません） |
 
 ### results/ の場所を差し替える
 
@@ -521,6 +648,8 @@ npm run recovery:dry   # 上のドライラン
 | 内容 | パス |
 |---|---|
 | **残課題（判断待ち・未実施のもの）** | **[docs/open-issues-20260904.md](docs/open-issues-20260904.md)** |
+| **当日PCへのセットアップ手順（USB から）・当日の起動** | **[docs/setup-onsite.md](docs/setup-onsite.md)** |
+| 配布パッケージの設計（exe を作らない理由ほか） | [docs/distribution-plan.md](docs/distribution-plan.md) |
 | ソースコードレビューの結果と対応 | [docs/code-review-20260903.md](docs/code-review-20260903.md) |
 | 2025年版残骸のクリーニング計画 | [docs/cleanup-plan-20260904.md](docs/cleanup-plan-20260904.md) |
 | 計画書（残日数・撤退ライン・判断事項） | `../docs/計画書.md` |
@@ -528,6 +657,7 @@ npm run recovery:dry   # 上のドライラン
 | ワークフローの設計と「アプリ側との約束」 | [assets/ComfyUI_KidsPG_2026_01.README.md](assets/ComfyUI_KidsPG_2026_01.README.md) |
 | 夜間作業レポート | `../docs/夜間作業レポート_20260901.md` / `_20260902.md` |
 | 素材とライセンス | [CREDITS.md](CREDITS.md) |
+| 長時間離席時のレビュー＆修正の手順（`/long-review`） | [.claude/skills/long-review/SKILL.md](.claude/skills/long-review/SKILL.md) |
 | 個人情報とデータの取り扱い | `../docs/個人情報とデータの取り扱い.md` |
 
 ---

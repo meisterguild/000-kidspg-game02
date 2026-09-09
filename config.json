@@ -94,6 +94,13 @@
     "_comment_profiles": "接続先とワークフローの組。省略した項目は下の共通設定から埋まる",
     "profiles": {
       "local": {
+      "_comment_paths": "この ComfyUI が置かれている物理絶対パス。**同一PCで動かしているプロファイルにだけ書く**（生成のやり取り自体は baseUrl の HTTP だけで足りている）。ここを使うのは (1) テスト・設定ページの「ComfyUI を起動する」ボタン (2) 当日 input / output を直に開いて中を見るときだけ。root は絶対パス必須。input / output / startBat は省略すると root\\input・root\\output・（起動ボタンなし）になり、root からの相対でも書ける。ComfyUI を新しい版へ差し替えたときは root の1行だけ直す（版ごとフォルダにする理由は docs/comfyui-local-setup.md §1）",
+      "paths": {
+        "root": "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI",
+        "input": "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\input",
+        "output": "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\output",
+        "startBat": "start-comfyui.bat"
+      },
         "label": "ローカルPC（GPU無し／CPU実行）",
         "baseUrl": "http://127.0.0.1:8188",
         "_comment_template": "低スペック向けの軽量ワークフロー。解像度とステップを落として数十秒で返すことを狙う",
@@ -120,6 +127,13 @@
         }
       },
       "local_light": {
+      "_comment_paths": "この ComfyUI が置かれている物理絶対パス。**同一PCで動かしているプロファイルにだけ書く**（生成のやり取り自体は baseUrl の HTTP だけで足りている）。ここを使うのは (1) テスト・設定ページの「ComfyUI を起動する」ボタン (2) 当日 input / output を直に開いて中を見るときだけ。root は絶対パス必須。input / output / startBat は省略すると root\\input・root\\output・（起動ボタンなし）になり、root からの相対でも書ける。ComfyUI を新しい版へ差し替えたときは root の1行だけ直す（版ごとフォルダにする理由は docs/comfyui-local-setup.md §1）",
+      "paths": {
+        "root": "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI",
+        "input": "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\input",
+        "output": "C:\\WORK\\AI\\ComfyUI_20260902_0.34.0\\ComfyUI\\output",
+        "startBat": "start-comfyui.bat"
+      },
         "label": "ローカルPC・画質を落とした退避用（CPU実行）",
         "baseUrl": "http://127.0.0.1:8188",
         "_comment_template": "接続先とワークフローは local と同じ。違うのは inputSize だけ（384 → 320）。生成が間に合わないときに activeProfile をこちらへ向けて**アプリを再起動**する",
@@ -146,7 +160,8 @@
         }
       },
       "server": {
-        "label": "AIサーバー rag-poc（NVIDIA GB10）",
+      "_comment_paths": "**paths は書かない。** AI サーバーは別の機体なので、この PC からその物理パスを開いても起動もできない。このプロファイルを選んでいる間は「ComfyUI を起動する」ボタンが使えない旨を画面に出す",
+        "label": "AIサーバー（NVIDIA GB10・社内LAN）",
         "baseUrl": "http://192.168.1.10:8188",
         "_comment_template": "本来の画質のワークフロー（SDXL 1024x1024 / ControlNet-Union / 8steps）",
         "templatePath": "assets/ComfyUI_KidsPG_2026_01.json",

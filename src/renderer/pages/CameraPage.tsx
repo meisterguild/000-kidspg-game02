@@ -172,13 +172,19 @@ const CameraPage: React.FC = () => {
 
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
-      if (event.key === ' ') {
-        event.preventDefault();
-        if (!isPhotoTaken) {
-          capturePhoto();
-        } else if (capturedImage) {
-          handleConfirm();
-        }
+      if (event.key !== ' ') return;
+      event.preventDefault();
+      // 🔴 **キーリピートを無視する。** Space を押しっぱなしにすると、
+      // 1発目で撮影、2発目（Windows の既定で約0.5秒後）で確定が走り、
+      // **「やりなおし」を見る前に本番の1枚が確定して次の画面へ進む**。
+      // 確定した写真はそのまま AI 変換と記念カードに焼かれ、
+      // 画面が変わったあとでは撮り直せない（敵対的レビュー 2026-09-09 の指摘）。
+      if (event.repeat) return;
+      // 撮影の直後に同じ押下で確定へ進まないよう、状態ごとに分ける
+      if (!isPhotoTaken) {
+        capturePhoto();
+      } else if (capturedImage) {
+        handleConfirm();
       }
     };
 

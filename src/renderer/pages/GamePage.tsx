@@ -61,6 +61,31 @@ const GamePage: React.FC = () => {
     setCurrentScreen('TOP');
   }, [resultDir, resetGameState, setCurrentScreen]);
 
+  /**
+   * 🔴 **ゲームが始まる前は、ここで Esc を受ける。**
+   *
+   * App は GAME 画面の Esc を GamePage へ委譲している（ゲーム中に抜けると
+   * 写真と ComfyUI ジョブを残した孤児フォルダができるため）。ところが
+   * 委譲先の配線は**ゲームエンジンが出来てから**（setEscapeCallback）なので、
+   * config が読めない・初期化に失敗した場合は
+   *   ・App は Esc を無視する
+   *   ・NavBar は GAME 画面では出さない
+   *   ・エンジンが無いので Esc ハンドラも無い
+   * となり、**アプリを強制終了する以外に戻れなくなる**
+   * （敵対的レビュー 2026-09-09 の指摘。エラー画面の
+   * 「Escキーでトップにもどることもできます」も事実と違っていた）。
+   * ゲームが動き出す前だけ受けるので、ゲーム中の誤脱出は起きない。
+   */
+  useEffect(() => {
+    if (!isLoading && !error) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      void handleEscapeKey();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isLoading, error, handleEscapeKey]);
+
   useEffect(() => {
     // gameContainerRef.current が利用可能になってから処理を開始
     if (!gameContainerRef.current) {
@@ -72,10 +97,26 @@ const GamePage: React.FC = () => {
 
     // configがまだロードされていない、またはエラーがある場合は処理を中断
     if (configLoading || configError || !config) {
-      setIsLoading(true); // configがロードされるまでローディング状態を維持
       if (configError) {
+        setIsLoading(false);
         setError(`設定の読み込みエラー: ${configError}`);
+        return;
       }
+      // 🔴 **読み込みが終わったのに config が無い場合を「読み込み中」にしない。**
+      // loadConfig は失敗すると null を返し、get-config はそれをそのまま返す。
+      // ConfigContext は invoke が成功しているので error を立てないため、
+      // 以前はここで永久に「ゲームを読み込み中...」のまま止まっていた
+      // （config.json のカンマを1つ余らせるだけで起きる。
+      // 敵対的レビュー 2026-09-09 の指摘）。理由を出して出口を見せる。
+      if (!configLoading && !config) {
+        setIsLoading(false);
+        setError(
+          '設定（config.json）を読み込めませんでした。ファイルが壊れている可能性があります。' +
+            'スタッフへ知らせてください。'
+        );
+        return;
+      }
+      setIsLoading(true); // configがロードされるまでローディング状態を維持
       return;
     }
 

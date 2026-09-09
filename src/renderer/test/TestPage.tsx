@@ -111,6 +111,8 @@ export const TestPage: React.FC = () => {
   const [comfyUIHealth, setComfyUIHealth] = useState<boolean | null>(null);
   const [comfyUIJobs, setComfyUIJobs] = useState<ComfyUIActiveJob[]>([]);
   const [comfyUILoading, setComfyUILoading] = useState(false);
+  /** ComfyUI の起動コマンドを投げている間だけ true（連打で窓が増えるのを防ぐ） */
+  const [launching, setLaunching] = useState(false);
 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -123,6 +125,13 @@ export const TestPage: React.FC = () => {
   const activeProfileName = comfy?.activeProfile;
   const activeProfile = activeProfileName ? comfy?.profiles?.[activeProfileName] : undefined;
   const comfyUIUrl = activeProfile?.baseUrl ?? comfy?.baseUrl ?? '';
+  /**
+   * ComfyUI の物理パス。**プロファイル側に書いてあればそれを丸ごと使う**
+   * （comfyui-config.ts の resolveComfyUIPaths と同じ扱い。項目ごとに重ねると
+   * 別の版フォルダの input を掘る組み合わせができてしまう）。
+   * AI サーバー側のプロファイルには無いのが正しい。
+   */
+  const comfyUIPaths = activeProfile?.paths ?? comfy?.paths;
   const comfyUITemplate = activeProfile?.templatePath ?? comfy?.workflow?.templatePath ?? '';
 
   /**
@@ -338,6 +347,59 @@ export const TestPage: React.FC = () => {
       if (!result.success) alert('ComfyUI の画面を開けませんでした: ' + (result.error ?? '原因不明'));
     } catch (err) {
       console.warn('ComfyUI 画面のオープンに失敗:', err);
+    }
+  }, []);
+
+  /**
+   * ComfyUI を起動する。**パスは渡さない**（main 側が config.json のものだけを叩く）。
+   * 起動には数十秒かかるので、押した直後にその旨を出す——出さないと
+   * 「反応がない」と何度も押され、窓が増える。
+   */
+  const handleLaunchComfyUI = useCallback(async () => {
+    try {
+      await playSound('buttonClick');
+      if (!window.electronAPI) {
+        alert('ブラウザ検証中は ComfyUI を起動できません（Electron アプリから操作してください）');
+        return;
+      }
+      setLaunching(true);
+      const result = await window.electronAPI.comfyui.launch();
+      if (!result.success) {
+        alert('ComfyUI を起動できませんでした: ' + (result.error ?? '原因不明'));
+        return;
+      }
+      if (result.alreadyRunning) {
+        alert('ComfyUI はすでに動いています（起動しませんでした）。');
+        return;
+      }
+      alert(
+        [
+          'ComfyUI の起動を始めました。',
+          result.startBat ?? '',
+          '',
+          'PowerShell の窓は開いたままにしてあります。モデルの読み込みに数十秒かかり、',
+          '失敗した場合の理由もその窓に出ます。ComfyUI を止めるときはその窓を閉じてください。',
+          '起動できたかは「ステータス更新」で確かめられます。',
+        ].join('\n')
+      );
+    } catch (err) {
+      console.warn('ComfyUI の起動に失敗:', err);
+    } finally {
+      setLaunching(false);
+    }
+  }, []);
+
+  const handleOpenComfyUIFolder = useCallback(async (which: 'input' | 'output') => {
+    try {
+      await playSound('buttonClick');
+      if (!window.electronAPI) {
+        alert('ブラウザ検証中はフォルダを開けません（Electron アプリから操作してください）');
+        return;
+      }
+      const result = await window.electronAPI.comfyui.openFolder(which);
+      if (!result.success) alert('フォルダを開けませんでした: ' + (result.error ?? '原因不明'));
+    } catch (err) {
+      console.warn('ComfyUI フォルダのオープンに失敗:', err);
     }
   }, []);
 
@@ -956,6 +1018,41 @@ export const TestPage: React.FC = () => {
                   ComfyUI をブラウザで開く
                 </button>
 
+                {/* ComfyUI 本体の起動。同一PCで動かしているプロファイルのときだけ押せる */}
+                <button
+                  onClick={handleLaunchComfyUI}
+                  disabled={launching || !comfyUIPaths?.startBat}
+                  title={
+                    comfyUIPaths?.startBat
+                      ? comfyUIPaths.startBat
+                      : 'このプロファイルには comfyui...paths.startBat が設定されていません'
+                  }
+                  className="px-4 py-2 bg-emerald-700 text-white rounded-lg hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 border border-emerald-500"
+                >
+                  <span>▶️</span>
+                  {launching ? '起動中...' : 'ComfyUI を起動する'}
+                </button>
+
+                <button
+                  onClick={() => handleOpenComfyUIFolder('input')}
+                  disabled={!comfyUIPaths}
+                  title={comfyUIPaths?.input ?? ''}
+                  className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 border border-slate-500"
+                >
+                  <span>📂</span>
+                  input を開く
+                </button>
+
+                <button
+                  onClick={() => handleOpenComfyUIFolder('output')}
+                  disabled={!comfyUIPaths}
+                  title={comfyUIPaths?.output ?? ''}
+                  className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 border border-slate-500"
+                >
+                  <span>📂</span>
+                  output を開く
+                </button>
+
                 {/* ブラウザの ComfyUI が最初に表示するのは「そのブラウザで最後に編集した
                     グラフ」で、ゲームが投げているものではない。同じ内容を手元で試せるよう、
                     現在の設定を焼き込んだワークフローを書き出す */}
@@ -967,6 +1064,21 @@ export const TestPage: React.FC = () => {
                   同じワークフローを書き出す（ブラウザへD&D用）
                 </button>
               </div>
+
+              {comfyUIPaths ? (
+                <p className="text-xs text-blue-300 mt-3 break-all">
+                  ComfyUI の場所（config.json の comfyui...paths）:
+                  <br />root: {comfyUIPaths.root ?? '(未設定)'}
+                  <br />input: {comfyUIPaths.input ?? '(root\\input)'}
+                  <br />output: {comfyUIPaths.output ?? '(root\\output)'}
+                  <br />起動バッチ: {comfyUIPaths.startBat ?? '(未設定・起動ボタンは使えません)'}
+                </p>
+              ) : (
+                <p className="text-xs text-blue-300 mt-3">
+                  このプロファイルには ComfyUI の物理パス（comfyui...paths）がありません。
+                  別の機体で動かしている想定なので、起動とフォルダを開く操作はそちらで行ってください。
+                </p>
+              )}
 
               <p className="text-xs text-blue-300 mt-3">
                 ブラウザで開いた ComfyUI に最初から出ているグラフは、そのブラウザで最後に編集したものです

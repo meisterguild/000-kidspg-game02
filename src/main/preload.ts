@@ -9,7 +9,8 @@ import type {
   ComfyUIStatusResult,
   ComfyUIHealthResult,
   ComfyUIJobsResult,
-  ComfyUIStatus
+  ComfyUIStatus,
+  ComfyUILaunchResult
 } from '@shared/types/comfyui';
 
 // Renderer側で使用可能なAPI定義
@@ -85,6 +86,18 @@ const electronAPI = {
     // ComfyUI の画面を既定ブラウザで開く（開く先は main 側が設定から決める）
     openUI: (): Promise<{ success: boolean; url?: string; error?: string }> =>
       ipcRenderer.invoke('open-comfyui-ui'),
+    /**
+     * ComfyUI を起動する。**叩くパスは渡さない**（main 側が config.json の
+     * comfyui...paths.startBat だけを叩く）。PowerShell の窓は開いたままにする
+     * ので、モデル読み込みの進みと失敗の理由はその窓で読める。
+     * すでに応答していた場合は起動せず alreadyRunning で返る。
+     */
+    launch: (): Promise<ComfyUILaunchResult> => ipcRenderer.invoke('comfyui-launch'),
+    /** ComfyUI の input / output をエクスプローラーで開く（この2箇所だけ） */
+    openFolder: (
+      which: 'input' | 'output'
+    ): Promise<{ success: boolean; path?: string; error?: string }> =>
+      ipcRenderer.invoke('comfyui-open-folder', which),
     // 現在の設定を焼き込んだワークフローを書き出し、エクスプローラで場所を開く。
     // ブラウザの ComfyUI へこのファイルをドラッグ＆ドロップすると、
     // ゲームが投げているのと同じグラフが開く
@@ -142,6 +155,50 @@ const electronAPI = {
   // main.ts の 'request-exit' ハンドラのコメントを参照。
   requestExit: () => ipcRenderer.invoke('request-exit'),
   getComfyUIStatusForExit: () => ipcRenderer.invoke('get-comfyui-status-for-exit'),
+
+  /**
+   * 「画面が出て、カメラの初期化まで終わった」ことを main へ伝える。
+   * main はこれを受けて logs/ready.json を書き、起動バッチがそれを待つ。
+   * 当日「起動バッチを叩いたら準備完了」を推測ではなく実測にするための経路
+   * （詳細は main/services/readiness.ts）。
+   */
+  reportReady: (info: {
+    assetsLoaded: boolean;
+    cameraReady: boolean;
+    usingDummyCamera: boolean;
+    screen: string;
+  }): Promise<{
+    success: boolean;
+    /** これがあると遊べない */
+    blockers?: string[];
+    /** 遊べるが当日困ること */
+    notes?: string[];
+    error?: string;
+  }> => ipcRenderer.invoke('app-ready', info),
+  /**
+   * main から「準備状況をもう一度報告して」と言われたときに呼ばれる。
+   * 起動バッチが2本目を起こしたときに飛んでくる（詳細は main の second-instance）。
+   */
+  onRequestReadyReport: (callback: () => void) => {
+    ipcRenderer.on('request-ready-report', () => callback());
+  },
+  removeRequestReadyReportListener: () => {
+    ipcRenderer.removeAllListeners('request-ready-report');
+  },
+  /**
+   * main からのスタッフ向けの注意。
+   * 🔴 以前はこの口が無く、main が送っていた 'startup-warning' を
+   * **誰も購読していなかった**ため、「記録の保存に失敗しました
+   * （この回はランキングに出ません）」が捨てられていた
+   * （敵対的レビュー 2026-09-09 の指摘）。表示は components/StaffNoticeBanner。
+   */
+  onStartupWarning: (callback: (notice: { kind: string; message: string }) => void) => {
+    ipcRenderer.on('startup-warning', (_, data) => callback(data));
+  },
+  removeStartupWarningListener: () => {
+    ipcRenderer.removeAllListeners('startup-warning');
+  },
+
   confirmExit: (confirmed: boolean) => ipcRenderer.invoke('confirm-exit', confirmed),
   onShowExitConfirmation: (callback: (comfyUIStatus: ComfyUIStatus) => void) => {
     ipcRenderer.on('show-exit-confirmation', (_, data) => callback(data));

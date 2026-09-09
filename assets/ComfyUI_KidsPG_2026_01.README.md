@@ -178,7 +178,7 @@ models/loras/Hyper-SDXL-8steps-CFG-lora.safetensors
 models/vae/sdxl_vae.safetensors
 ```
 
-AIサーバー（`ssh rag-poc`）の共有ストア `/srv/llm/hf` へ取得済み。
+AIサーバー（各自の ssh Host 名。tools/fetch-models.sh 参照）の共有ストア `/srv/llm/hf` へ取得済み。
 ローカルへは `bash tools/fetch-models.sh` で取り込む。
 
 ## 実機確認で見るポイント

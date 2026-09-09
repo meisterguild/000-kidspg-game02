@@ -603,6 +603,21 @@ class ComfyUIWorker {
     // キュー期限の超過だけは通信エラーと区別する（前者は諦める、後者は粘る）
     let expired = false;
 
+    /**
+     * 🔴 **「queue にも history にも無い」を検出する。**
+     *
+     * ComfyUI を再起動すると（当日「重くなったので ComfyUI だけ入れ直す」は
+     * 現実に起きる）、投入済みのプロンプトは queue からも history からも消える。
+     * 以前はこの状態が例外にならず、2秒ごとに poll が回り続けて
+     * **キュー期限（15分）まで唯一の実行枠を占有**していた。1枚170秒なので
+     * およそ5人ぶんのAI変換が失われる（敵対的レビュー 2026-09-09 の指摘）。
+     *
+     * 投入直後は ComfyUI 側の反映に一瞬かかるので、1回では諦めない。
+     * 連続で続いたときだけ「消えた」と判断する。
+     */
+    const maxConsecutiveVanished = 5;
+    let consecutiveVanished = 0;
+
     const poll = async () => {
       try {
         // 🔴 **もう自分のジョブでなくなっていたら、そこで監視をやめる。**
@@ -628,11 +643,19 @@ class ComfyUIWorker {
         const queueResponse = await electronFetch(`${this.config.baseUrl}/queue`, { timeout: pollTimeout });
         const queueData = await queueResponse.json() as ComfyUIQueueResponse;
 
-        consecutivePollFailures = 0; // 応答があったので数え直す
+        // ⚠️ **ここで数え直してはいけない。** 以前は /queue の応答が返った時点で
+        // consecutivePollFailures = 0 にしていたため、「/queue は返るが /history が
+        // 毎回タイムアウトする」場合に 1 と 0 を往復し、
+        // maxConsecutivePollFailures に**永久に届かなかった**
+        // （敵対的レビュー 2026-09-09 の指摘）。
+        // 数え直すのは**その周回を最後まで通せたとき**だけ（下の2か所）。
 
         const position = this.findQueuePosition(queueData, job.promptId);
 
         if (position !== null) {
+          // キューに居ることが分かった＝この周回は最後まで通った
+          consecutivePollFailures = 0;
+          consecutiveVanished = 0;
           this.sendJobProgress(datetime, 'job-queue-update', {
             position,
             message: position === 0 ? '処理中' : `キュー位置: ${position}`
@@ -650,9 +673,24 @@ class ComfyUIWorker {
           const historyData = await historyResponse.json() as ComfyUIHistoryResponse;
 
           if (historyData[job.promptId]) {
+            consecutiveVanished = 0;
             await this.completeJob(datetime, historyData[job.promptId]);
             return;
           }
+        }
+
+        // /queue と /history の両方を聞き切った＝この周回は最後まで通った
+        consecutivePollFailures = 0;
+
+        // ここに来たのは「queue に居ない」かつ「history にも無い」。
+        // ComfyUI 側からプロンプトが消えている（再起動された等）。
+        // 期限まで回し続けると実行枠を握ったままになるので、続いたら諦める。
+        consecutiveVanished += 1;
+        if (consecutiveVanished >= maxConsecutiveVanished) {
+          throw new Error(
+            'ComfyUI 側にプロンプトが見つかりません（キューにも履歴にも無い）。' +
+              'ComfyUI が再起動された可能性があります'
+          );
         }
 
         setTimeout(poll, this.config.pollingInterval);
@@ -799,8 +837,19 @@ class ComfyUIWorker {
     const partialPath = buildPartialOutputPath(outputPath);
 
     try {
-      // 本文が止まった接続で永久にぶら下がらないよう、必ずタイムアウトを付ける
-      const response = await electronFetch(imageUrl, { timeout: this.config.timeouts.processing });
+      // 本文が止まった接続で永久にぶら下がらないよう、必ずタイムアウトを付ける。
+      //
+      // ⚠️ **POST 用の timeouts.processing（既定10分）を流用しないこと。**
+      // ここは 127.0.0.1 から 200KB 前後を受け取るだけで、10分は明らかに過大。
+      // しかも settleJob はこの**後**に呼ばれるので、本文が途中で止まると
+      // その間ずっと唯一の実行枠（maxConcurrentJobs=1）が空かず、
+      // 次の子のジョブが1件も投入されない（敵対的レビュー 2026-09-09 の指摘）。
+      // upload と同じ尺度（既定60秒）にしておく。
+      const downloadTimeout = Math.min(
+        this.config.timeouts.upload,
+        this.config.timeouts.processing
+      );
+      const response = await electronFetch(imageUrl, { timeout: downloadTimeout });
       if (!response.ok) {
         throw new Error(`画像ダウンロードエラー: ${response.status}`);
       }

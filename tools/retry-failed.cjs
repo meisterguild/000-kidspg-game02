@@ -40,6 +40,8 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+// results の場所の判断は1箇所に集めてある（配布された ops から実物を指すため）
+const { resolveResultsDir, describeMissing } = require('./lib/resolve-results-dir.cjs');
 const DIST = path.join(ROOT, 'dist', 'main', 'main', 'services');
 
 const parseArgs = (argv) => {
@@ -343,23 +345,53 @@ const warnIfDistIsStale = () => {
 };
 
 /**
- * `npm run recovery` を非同期で走らせる。
+ * カード合成の実装（ビルド済み）の場所。
+ *
+ * 🔴 **npm に頼ってはいけない。** 以前は `npm run recovery`（= tsx で
+ * TypeScript のソースを直接実行）を呼んでいたが、**当日PCには npm も
+ * node_modules も src/ も無い**ため、カードの作り直しは構造的に不可能だった
+ * （敵対的レビュー 2026-09-09 の指摘）。しかもパターンA（AI画像の作り直し）が
+ * 成功しても B で必ず落ちるので、「成功したのに [失敗] と出る」形になっていた。
+ * tsconfig.main.json に node 側の合成実装を含めてビルドし、ここから
+ * **同じ node で**直接呼ぶ。
+ */
+const RECOVERY_JS = path.join(ROOT, 'dist', 'main', 'test', 'memorial-card-recovery.js');
+
+/**
+ * ImageMagick を PATH に載せる。
+ * 当日PCの ImageMagick は binImageMagick にフォルダ複製で置いてあり、
+ * **PATH には入っていない**（start-kidspg.bat がアプリ起動の間だけ足している）。
+ * 別ウィンドウで動く救済ツールからは見えないので、ここでも足す。
+ */
+const withMagickPath = (env) => {
+  for (const dir of [
+    path.join(ROOT, '..', 'bin', 'ImageMagick'), // 配布された ops から見た場所
+    path.join(ROOT, 'bin', 'ImageMagick'),
+  ]) {
+    if (fs.existsSync(path.join(dir, 'magick.exe'))) {
+      return { ...env, PATH: dir + path.delimiter + (env.PATH || '') };
+    }
+  }
+  return env;
+};
+
+/**
+ * 合成を非同期で走らせる。
  * 同期実行にすると保守ロックの heartbeat と SIGINT ハンドラが止まるため、
  * 必ず spawn + タイムアウトで待つ。
  */
 const runRecovery = (datetime, timeoutMs, resultsDir) => new Promise((resolve, reject) => {
-  const child = spawn('npm', ['run', 'recovery', '--', '--only', datetime], {
+  const child = spawn(process.execPath, [RECOVERY_JS, '--only', datetime], {
     cwd: ROOT,
     stdio: 'inherit',
-    shell: true,
-    env: {
+    env: withMagickPath({
       ...process.env,
       KIDSPG_RESULTS_DIR: resultsDir,
       // 🔴 保守ロックは**このプロセスが既に持っている**。子（recovery）が
       // 自分で取りに行くと、親の握っているロックで弾かれて1件も直せない。
       // 直接 `npm run recovery` を叩いたときだけ、あちら側が自分で取る。
       KIDSPG_MAINTENANCE_LOCK_HELD: '1',
-    },
+    }),
   });
   const timer = setTimeout(() => {
     child.kill();
@@ -369,7 +401,7 @@ const runRecovery = (datetime, timeoutMs, resultsDir) => new Promise((resolve, r
   child.on('close', (code) => {
     clearTimeout(timer);
     if (code === 0) resolve();
-    else reject(new Error(`recovery が exit code ${code} で終了しました`));
+    else reject(new Error(`カードの合成が exit code ${code} で終了しました`));
   });
 });
 
@@ -384,9 +416,10 @@ const main = async () => {
   }
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf-8'));
   // テストや退避先の検証で results/ を差し替えられるようにする
-  const resultsDir = process.env.KIDSPG_RESULTS_DIR
-    ? path.resolve(process.env.KIDSPG_RESULTS_DIR)
-    : path.join(ROOT, 'results');
+  // results の場所は tools/lib/resolve-results-dir.cjs に集めてある
+  // （配布された ops から実行すると ops/results を見てしまい、当日動かなかった）
+  const resolvedResults = resolveResultsDir(ROOT);
+  const resultsDir = resolvedResults.dir;
   const resultsJson = path.join(resultsDir, 'results.json');
 
   const { resolveComfyUIConfig } = requireDist('comfyui-config.js');
@@ -400,7 +433,13 @@ const main = async () => {
   const comfy = resolveComfyUIConfig(config.comfyui);
   const outputPrefix = comfy.workflow.outputPrefix;
 
-  if (!fs.existsSync(resultsDir)) { log('results/ がありません'); return; }
+  if (!fs.existsSync(resultsDir)) {
+    // 🔴 探した場所を必ず見せる。以前はパスを出さず、しかも終了コード 0 で
+    // 終わっていたため「エラーが出ていない＝直った」と読めた
+    log(describeMissing(resolvedResults));
+    process.exitCode = 1;
+    return;
+  }
 
   // 🔴 アプリの起動時点検と同時に走ると、相手が作り直した正常なカードを
   // 退避してしまう。プロセスを越えた排他を取る（--apply のときだけ）。
@@ -514,15 +553,33 @@ const main = async () => {
     let canRebuild = true;
     if (args.apply && (todo.B.length || todo.broken.length)) {
       try {
-        execFileSync('npm', ['run', 'recovery', '--', '--only', '00000000_000000', '--dry-run'], {
-          cwd: ROOT, stdio: 'pipe', shell: true, timeout: 120_000,
-          env: { ...process.env, KIDSPG_RESULTS_DIR: resultsDir },
+        if (!fs.existsSync(RECOVERY_JS)) {
+          throw new Error(
+            'カード合成の実装が見つかりません: ' + RECOVERY_JS +
+            '\n（開発機なら npm run build、配布版ならパッケージの作り直しが必要です）'
+          );
+        }
+        // 🔴 **--dry-run で代用しないこと。** recovery 側は !dryRun の中でしか
+        //    初期化しないので、--dry-run は config.json も土台画像も magick も
+        //    一切触らずに 0 を返す。以前それを根拠にしていたため、合成が絶対に
+        //    失敗する環境でも canRebuild = true になり、壊れたカードを退避して
+        //    参照をプレースホルダへ倒したうえで作り直しに失敗していた
+        //    （＝下のコメントが防ごうとしている「純粋な劣化」そのもの）。
+        //    --check-compose は config・土台画像・フォント・magick の起動まで見る。
+        const probe = execFileSync(process.execPath, [RECOVERY_JS, '--check-compose'], {
+          cwd: ROOT, stdio: 'pipe', timeout: 120_000, encoding: 'utf8',
+          env: withMagickPath({ ...process.env, KIDSPG_RESULTS_DIR: resultsDir }),
         });
+        for (const line of String(probe).split(/\r?\n/)) if (line.trim()) log('  ' + line.trim());
       } catch (e) {
         canRebuild = false;
         log('');
-        log(`!! カードの合成（npm run recovery）が使えません: ${e.message}`);
-        log('   node_modules や ImageMagick を確認してください。作り直せないので、壊れたカードの退避は行いません');
+        log(`!! カードの合成が使えません: ${e.message}`);
+        // 中の点検結果（どれが NG だったか）を見せる。当日その場で判断できるように
+        for (const chunk of [e.stdout, e.stderr]) {
+          for (const line of String(chunk || '').split(/\r?\n/)) if (line.trim()) log('  ' + line.trim());
+        }
+        log('   作り直せないので、壊れたカードの退避は行いません（いまの表示のまま残します）');
       }
     }
 
