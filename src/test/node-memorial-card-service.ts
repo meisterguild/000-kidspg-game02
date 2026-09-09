@@ -8,6 +8,7 @@ import * as fs from 'fs/promises';
 import type { GameResult } from '../shared/types';
 import { CommandExecutor, type ExecutionResult, type MagickError } from '../main/services/command-executor';
 import { MagickScriptGenerator } from '../main/services/magick-script-generator';
+import { resolveMagickCommand } from '../main/services/magick-path';
 import { discardFailedPartial, finalizeCardOutput } from '../main/services/card-output';
 import { NodeImageCompositionConfig, type CompositionConfig } from './node-image-composition-config';
 
@@ -32,9 +33,22 @@ export class NodeMemorialCardService {
 
   constructor(config: MemorialCardConfig, projectRoot?: string) {
     this.config = config;
-    this.commandExecutor = new CommandExecutor(config.magickTimeout);
+    // 🔴 携帯版 ImageMagick は PATH に入っていない。素材と同じルートから探す
+    this.commandExecutor = new CommandExecutor(
+      config.magickTimeout,
+      resolveMagickCommand(projectRoot ? [projectRoot] : [])
+    );
     this.imageConfig = new NodeImageCompositionConfig(config.cardBaseImagesDir, projectRoot);
     this.scriptGenerator = new MagickScriptGenerator();
+  }
+
+  /**
+   * 合成の設定（土台画像・フォントの場所）を外から見る。
+   * 救済ツールの --check-compose が「今この環境で合成できるか」を
+   * 確かめるために使う。private を型で抜くと壊れやすいので入口を用意する。
+   */
+  getImageConfig(): NodeImageCompositionConfig {
+    return this.imageConfig;
   }
 
   /**

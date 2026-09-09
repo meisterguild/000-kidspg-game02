@@ -44,6 +44,19 @@ export const useReportReady = (): void => {
   // 起動バッチは印を消してから現れるのを待つので、すでに生きている場合に
   // 報告し直せないと必ず時間切れになる（詳細は main の second-instance）。
   const reported = useRef(false);
+  /**
+   * 直前に報告した cameraReady。
+   *
+   * 🔴 **打ち切りで false と報告したあと、決着したら1回だけ言い直す。**
+   * USB カメラの初回ドライバ初期化や Windows のカメラの確認で
+   * `getUserMedia` が 20 秒を超えると、打ち切って cameraReady=false のまま
+   * 報告する（それ自体は正しい——黙って待つとバッチは「時間切れ」しか
+   * 言えない）。ところが以前は `reported.current` が立ったままで二度と
+   * 報告しなかったため、25 秒後にカメラが正常に開いても ready.json は
+   * 「カメラの初期化が終わっていません…アプリを再起動してください」で固定され、
+   * **遊べる状態なのに開場が止まっていた**（敵対的レビュー 2026-09-09 の指摘）。
+   */
+  const reportedCameraReady = useRef<boolean | null>(null);
   /** 再報告の依頼が来た回数。増えると下の useEffect が動き直す */
   const [reportNonce, setReportNonce] = useState(0);
   // 🔴 **ここは ref ではなく state。** ref に入れても再描画が起きないので、
@@ -60,13 +73,16 @@ export const useReportReady = (): void => {
     if (!window.electronAPI?.onRequestReadyReport) return;
     window.electronAPI.onRequestReadyReport(() => {
       reported.current = false;
+      reportedCameraReady.current = null;
       setReportNonce((n) => n + 1);
     });
     return () => window.electronAPI?.removeRequestReadyReportListener?.();
   }, []);
 
   useEffect(() => {
-    if (reported.current) return;
+    // 打ち切りで false と報告したあとに決着したら、1回だけ言い直す
+    const cameraRecovered = reported.current && reportedCameraReady.current === false && cameraReady;
+    if (reported.current && !cameraRecovered) return;
     if (configLoading) return;
     if (!assetsLoaded) return;
 
@@ -79,6 +95,10 @@ export const useReportReady = (): void => {
     if (!cameraSettled && !settleTimedOut) return;
 
     reported.current = true;
+    reportedCameraReady.current = cameraReady;
+    if (cameraRecovered) {
+      console.log('[準備確認] カメラが遅れて決着したので報告し直します');
+    }
     // 🔴 **報告するのは「先読みが失敗しなかったか」。**
     // App.tsx は読み込みが失敗しても setAssetsLoaded(true) で先へ進める
     // （ゲームは動くので、その判断自体は正しい）。そのぶん画面側のフラグは

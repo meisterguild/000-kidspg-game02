@@ -33,6 +33,8 @@ import {
   type ReadinessReport,
   type RendererReadiness,
 } from './services/readiness';
+import { resolveMagick } from './services/magick-path';
+import { locateAsset } from './services/asset-locator';
 import { applyConfigPatch } from './services/config-writer';
 
 /**
@@ -65,6 +67,13 @@ class ElectronApp {
   /** activeProfile を解決した後の ComfyUI 設定。config.comfyui を直接読まずこちらを使う */
   private comfyUI: ResolvedComfyUIConfig | null = null;
   private memorialCardService: MemorialCardService | null = null;
+  /**
+   * 実際に使う magick の場所と、起動できたか。
+   * ready.json に載せて起動バッチの「準備完了」の根拠にする
+   * （カードが1枚も作られない状態で開場しないため）。
+   */
+  private magickCommand = 'magick';
+  private magickUsable = false;
   private resultsManager: ResultsManager | null = null;
   private rankingService: RankingService | null = null; // ADDED
   private memorialCardGenerationFlags = new Map<string, 'dummy_inprogress' | 'dummy_completed' | 'ai_inprogress' | 'ai_completed'>(); // 生成状態管理フラグ
@@ -351,8 +360,16 @@ class ElectronApp {
       // 前回の異常終了で残った results.json.*.tmp を掃除する
       await this.resultsManager.cleanupTempFiles();
 
-      await this.createMainWindow();
+      // 🔴 **IPC の口を先に登録する。** `loadFile` の Promise は
+      // did-finish-load（document の load 後）で解決するが、レンダラの
+      // module スクリプトと React の初回 mount / useEffect は**その前**に走る。
+      // つまり ConfigContext の getConfig() が setupIPC() より先に届き得て、
+      // その場合 invoke は「No handler registered for 'get-config'」で reject し、
+      // 赤いエラー画面のまま useReportReady が「準備完了」を報告する
+      // （敵対的レビュー 2026-09-09 の指摘）。
+      // setupIPC は window に依存しないので、順序を入れ替えれば済む。
       this.setupIPC();
+      await this.createMainWindow();
       await this.initializeServices();
       await this.checkImageMagick();
       await this.checkComfyUI();
@@ -432,6 +449,9 @@ class ElectronApp {
       icon: path.join(__dirname, '../../../assets/icon.ico'),
       title: 'KidsPG - AIグミパク！'
     });
+
+    // 画面が落ちたら印を消し、1回だけ読み直す（watchRendererCrash の注釈）
+    this.watchRendererCrash(this.mainWindow);
 
     // 開発環境ではViteサーバー、本番環境では静的ファイルを読み込み
     if (process.env.NODE_ENV === 'development') {
@@ -528,15 +548,22 @@ class ElectronApp {
         const base64Data = imageData.replace(/^data:image\/png;base64,/, '');
         
         if (isDummy) {
-          // ダミー画像の場合、dummy_photo.pngを直接コピー
-          let dummyPhotoPath: string;
-          if (app.isPackaged) {
-            // 本番環境: exeファイルと同じディレクトリの assets フォルダ
-            dummyPhotoPath = path.join(path.dirname(app.getPath('exe')), 'assets', 'dummy_photo.png');
-          } else {
-            // 開発環境: プロジェクトルートの assets フォルダ
-            dummyPhotoPath = path.join(app.getAppPath(), 'src', 'renderer', 'assets', 'images', 'dummy_photo.png');
+          // ダミー画像の場合、dummy_photo.pngを直接コピー。
+          // 🔴 **isPackaged で分岐しない**（services/asset-locator.ts の注釈）。
+          //    以前は配布形で存在しない src/renderer/assets/images/ を指しており、
+          //    コピーに失敗して catch の base64（＝カメラが無いときは灰色の
+          //    「カメラなし」四角）が photo_*.png として残っていた
+          //    （敵対的レビュー 2026-09-09 の指摘）。
+          const dummy = locateAsset('assets/images/dummy_photo.png', {
+            bundleRoot: this.getBundleRoot(),
+            mainDir: __dirname,
+            exeDir: app.isPackaged ? path.dirname(app.getPath('exe')) : undefined,
+          });
+          if (!dummy.path) {
+            console.error('[ダミー写真] 見つかりません。探した場所:');
+            for (const s of dummy.searched) console.error('           ' + s);
           }
+          const dummyPhotoPath = dummy.path ?? '';
           
           try {
             await fs.copyFile(dummyPhotoPath, filePath);
@@ -803,6 +830,13 @@ class ElectronApp {
               }
             : null,
           results: { dir: resultsDir, writable: await checkResultsWritable(resultsDir) },
+          // 🔴 config が読めたか。読めないと画面は TOP まで出るのに遊べない
+          configLoaded: !!this.config,
+          memorialCard: {
+            ready: !!this.memorialCardService,
+            magickCommand: this.magickCommand,
+            magickUsable: this.magickUsable,
+          },
         };
         const { blockers, notes } = classifyReadiness(base);
         const report: ReadinessReport = { ...base, blockers, notes };
@@ -1097,94 +1131,34 @@ class ElectronApp {
       }
     });
 
-    // 新しいIPCハンドラ: アセットの絶対パスを取得
+    /**
+     * アセットの絶対パスを返す。
+     *
+     * 🔴 **`app.isPackaged` で分岐しない。** 当日PC は「electron 本体で dist を
+     * 読む」形なので `isPackaged === false` になるが `src/` は配っていない。
+     * 以前は isPackaged を見て開発側の枝に入り、存在しない
+     * `<app>\src\renderer\assets\sounds\bell.mp3` を（console.error だけ出して）
+     * そのまま返していた。開発機には `src/` があるため通ってしまい、
+     * **当日PC でだけ効果音10個とタイトル画像が全滅する**壊れ方だった
+     * （敵対的レビュー 2026-09-09 の指摘）。
+     *
+     * 判断は services/asset-locator.ts に集約し、ここは
+     * 「見つからなかったことを黙って通さない」だけを持つ。
+     */
     ipcMain.handle('get-asset-absolute-path', async (event, relativePath: string) => {
-      
-      try {
-        let assetPath: string;
-        
-        if (app.isPackaged) {
-          // 本番環境: ASARパッケージ内のdist/renderer/assetsフォルダのアセットにアクセス
-          // relativePath例: "assets/sounds/action.mp3" -> "dist/renderer/assets/action.mp3"
-          const assetFileName = relativePath.replace(/^assets\/(sounds|images)\//, '');
-          
-          assetPath = path.join(__dirname, '../../renderer/assets', assetFileName);
-          
-          // ファイル存在確認
-          try {
-            await fs.access(assetPath);
-          } catch (accessError) {
-            console.error(`main.ts: [PACKAGED] ❌ Asset file NOT FOUND: ${assetPath}`);
-            console.error(`main.ts: [PACKAGED] Access error:`, accessError);
-            
-            // 代替パスをいくつか試行
-            const alternativePaths = [
-              path.join(__dirname, '../renderer/assets', assetFileName),
-              path.join(__dirname, 'renderer/assets', assetFileName),
-              path.join(__dirname, '../../assets', assetFileName),
-              path.join(path.dirname(app.getPath('exe')), 'resources', relativePath)
-            ];
-            
-            let foundAlternative = false;
-            
-            for (const altPath of alternativePaths) {
-              try {
-                await fs.access(altPath);
-                assetPath = altPath;
-                foundAlternative = true;
-                break;
-              } catch {
-                // Continue to next alternative
-              }
-            }
-            
-            if (!foundAlternative) {
-              console.error(`main.ts: [PACKAGED] CRITICAL - No valid asset path found for: ${relativePath}`);
-            }
-          }
-        } else {
-          // 開発環境: src/renderer/assetsフォルダのアセットにアクセス
-          assetPath = path.join(app.getAppPath(), 'src/renderer', relativePath);
-          
-          // 開発環境でもファイル存在確認
-          try {
-            await fs.access(assetPath);
-          } catch (accessError) {
-            console.error(`main.ts: [DEV] ❌ Asset file NOT FOUND: ${assetPath}`);
-            console.error(`main.ts: [DEV] Access error:`, accessError);
-          }
-        }
-        
-        return assetPath;
-        
-      } catch (error) {
-        console.error('main.ts: CRITICAL - Error resolving asset path:', error);
-        console.error('main.ts: Error details:', {
-          type: typeof error,
-          name: error instanceof Error ? error.name : 'Unknown',
-          message: error instanceof Error ? error.message : String(error)
-        });
-        
-        // フォールバック: 従来の方法
-        const appPath = app.isPackaged
-          ? path.dirname(app.getPath('exe'))
-          : app.getAppPath();
+      const found = locateAsset(relativePath, {
+        bundleRoot: this.getBundleRoot(),
+        mainDir: __dirname,
+        exeDir: app.isPackaged ? path.dirname(app.getPath('exe')) : undefined,
+      });
+      if (found.path) return found.path;
 
-        const resourcesPath = app.isPackaged
-          ? path.join(appPath, 'resources')
-          : appPath;
-
-        const absoluteAssetPath = path.join(resourcesPath, relativePath);
-        
-        // フォールバックパスも存在確認
-        try {
-          await fs.access(absoluteAssetPath);
-        } catch (fallbackError) {
-          console.error(`main.ts: [FALLBACK] ❌ Fallback path also not found: ${absoluteAssetPath}`, fallbackError);
-        }
-        
-        return absoluteAssetPath;
-      }
+      // 🔴 見つからないまま「それらしいパス」を返してはいけない。
+      //    呼び出し側（renderer）は throw を拾って
+      //    markBackgroundPreloadFailed() を立て、ready.json の blockers に載る。
+      console.error(`[アセット] 見つかりません: ${relativePath}`);
+      for (const s of found.searched) console.error(`           探した場所: ${s}`);
+      throw new Error(`アセットが見つかりません: ${relativePath}`);
     });
 
     // 画像のデータURLを取得する
@@ -1253,19 +1227,31 @@ class ElectronApp {
    * ランキングが全部ダミー写真になるまで気付けない。
    */
   private async checkImageMagick(): Promise<void> {
+    // 🔴 **PATH 任せで探さない。** 当日PC の ImageMagick は PATH に入っていない
+    //    携帯版で、しかもアプリは WMI 経由で起こされるため起動バッチが足した
+    //    PATH を受け取れない（services/magick-path.ts の注釈）。
+    //    以前はここで shell 経由の 'magick' を叩いていたため、
+    //    **開発機では通り、当日PC では必ず落ちる**という見え方になっていた。
+    const resolution = resolveMagick([this.getBundleRoot()]);
+    this.magickCommand = resolution.command;
     try {
       const { spawn } = await import('child_process');
       await new Promise<void>((resolve, reject) => {
-        const proc = spawn('magick', ['-version'], { shell: true });
+        // shell: false。絶対パスに空白が入るので shell を挟むと壊れる
+        const proc = spawn(resolution.command, ['-version'], { shell: false });
         proc.on('error', reject);
         proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
       });
-      console.log('ImageMagick: OK');
+      this.magickUsable = true;
+      console.log(`ImageMagick: OK (${resolution.from}) ${resolution.command}`);
     } catch (error) {
-      console.error('ImageMagick(magick) が見つかりません。記念カードは生成されません。', error);
+      this.magickUsable = false;
+      console.error('ImageMagick(magick) を起動できません。記念カードは生成されません。', error);
+      console.error('  探した場所: ' + (resolution.searched.join(' / ') || '(PATH のみ)'));
       this.warnAtStartup(
         'imagemagick-missing',
-        'ImageMagick が見つかりません。記念カードが作られません。PATH を確認してください。'
+        'ImageMagick を起動できません（' + resolution.command + '）。' +
+          '記念カードが1枚も作られません。当日PCでは bin\\ImageMagick\\magick.exe を使います。'
       );
     }
   }
@@ -1295,7 +1281,15 @@ class ElectronApp {
     // 輪郭以外まったく反映されていない絵が全員に出る。静かに劣化するので必ず知らせる。
     await this.checkGenerationSettings(comfy);
 
-    const healthy = await this.comfyUIService.healthCheck();
+    // ⚠️ **1回だけ聞いてはいけない。** バッチはポートの待受までしか待たず、
+    // ComfyUI は待受を始めてからモデルの読み込みで1〜2分は /system_stats を
+    // 返さない。1回きりで判断すると、朝いちばんの起動でほぼ必ず
+    // 「接続できません」のモーダルがゲーム画面を覆い、OK を押すまで操作できない。
+    // 一方 app-ready 側は待ってから healthy: true を書くので、
+    // **「★★★ 準備完了 ★★★（注意0件）」と言われた画面の上に赤い警告が出る**
+    // という食い違いが起きていた（敵対的レビュー 2026-09-09 の指摘）。
+    // 判定の待ち方を app-ready と揃える。
+    const healthy = await this.waitForComfyUIHealthy();
     if (healthy) {
       console.log(`ComfyUI: OK (${comfy.baseUrl} / プロファイル ${comfy.profileName})`);
       return;
@@ -1352,8 +1346,9 @@ class ElectronApp {
   /**
    * 起動時の警告をスタッフに届ける。
    *
-   * renderer への 'startup-warning' は現状どの画面も購読していないため、
-   * それだけでは誰にも見えない。確実に気づけるよう OS のダイアログも出す。
+   * renderer への 'startup-warning' は components/StaffNoticeBanner が購読して
+   * 画面の上端に帯で出す。ただし帯だけだとプレイ中に見落とすので、
+   * 起動時の警告は OS のダイアログも併せて出す。
    *
    * ・親ウィンドウを渡してモーダルにする。渡さないと独立ウィンドウとして開き、
    *   スタッフが気づく前に子どもがそのまま遊び始められる。
@@ -1390,18 +1385,75 @@ class ElectronApp {
     this.setupRankingWatcher();
   }
 
+  /**
+   * レンダラ（画面）が落ちたことを印に反映する。
+   *
+   * 🔴 **落ちても window は残るので `window-all-closed` は来ない。**
+   * 以前はそのため `ready.json` が「準備完了」のまま残り、
+   * 真っ白な画面を見てバッチを叩き直しても、既存プロセスが生きているので
+   * second-instance → 死んだレンダラへ `request-ready-report` を送るだけ
+   * （届かない）→ 90 秒待って「報告がありません」で終わっていた。
+   * 原因がどこにも出ないのがいちばん困るので、
+   *   ・印を消す（次のバッチが古い印を信じない）
+   *   ・1回だけ読み直す（一過性の GPU クラッシュから自力で戻れる）
+   *   ・スタッフに見せる
+   * の3つをする（敵対的レビュー 2026-09-09 の指摘）。
+   */
+  private watchRendererCrash(window: BrowserWindow): void {
+    let reloadedOnce = false;
+    window.webContents.on('render-process-gone', (_event, details) => {
+      console.error('[画面] レンダラが落ちました:', details.reason, details.exitCode);
+      void clearReadiness(this.getBundleRoot());
+      if (!reloadedOnce && details.reason !== 'clean-exit') {
+        reloadedOnce = true;
+        console.error('[画面] 1回だけ読み直します');
+        try {
+          window.webContents.reload();
+        } catch (error) {
+          console.error('[画面] 読み直しに失敗しました:', error);
+        }
+        return;
+      }
+      this.warnAtStartup(
+        'renderer-gone',
+        'ゲーム画面が落ちました（' + details.reason + '）。' +
+          'いったんアプリを終了し、start-kidspg.bat をもう一度実行してください。'
+      );
+    });
+    window.webContents.on('unresponsive', () => {
+      console.error('[画面] レンダラが応答しません');
+      void clearReadiness(this.getBundleRoot());
+    });
+  }
+
   private async initializeMemorialCardService(): Promise<void> {
     try {
       if (!this.config?.memorialCard) {
+        // 🔴 **黙って return してはいけない。** ここを通ると save-json の
+        //    カード生成ブロックが丸ごと飛び、プレイは成立してランキングにも
+        //    出るのに**全員のカードが存在しない**状態になる。
+        //    以前は警告もログも無く、当日は持ち帰るものが無いことに
+        //    閉場まで気づけなかった（敵対的レビュー 2026-09-09 の指摘）。
+        console.error('[記念カード] config.json に memorialCard がありません。カードは作られません');
+        this.warnAtStartup(
+          'memorial-card-config-missing',
+          'config.json に memorialCard の設定がありません。記念カードが1枚も作られません。'
+        );
         return;
       }
 
       this.memorialCardService = new MemorialCardService(
         this.config.memorialCard,
-        this.mainWindow || undefined
+        this.mainWindow || undefined,
+        // 携帯版 ImageMagick を探す起点。当日PC は <app>\..\bin\ImageMagick
+        this.getBundleRoot()
       );
     } catch (error) {
       console.error('Memorial Card Service initialization failed:', error);
+      this.warnAtStartup(
+        'memorial-card-init-failed',
+        '記念カードの初期化に失敗しました。カードが作られません: ' + String(error)
+      );
       this.memorialCardService = null;
     }
   }

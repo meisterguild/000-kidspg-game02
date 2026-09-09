@@ -132,10 +132,19 @@ export const GAME_ASSETS: AssetKey[] = [
   'sound7',
 ];
 
+/**
+ * 起動時にまとめて先読みするもの。
+ *
+ * 🔴 **画像も入れる。** 以前は音だけで、準備確認の
+ * 「背景アセットを読み込めていません」が**画像の欠落を1枚も見ていなかった**
+ * （敵対的レビュー 2026-09-09 の指摘）。TOP のタイトル画像が読めない状態は
+ * 当日いちばん最初に目に入る不具合なので、ここに載せて起動時に確かめる。
+ */
 export const ALL_BACKGROUND_ASSETS: AssetKey[] = [
   ...GAME_ASSETS,
   ...SCREEN_TRANSITION_ASSETS,
   ...RESULT_PAGE_ASSETS,
+  ...TOP_PAGE_ASSETS,
 ];
 
 // タイミング関連の定数

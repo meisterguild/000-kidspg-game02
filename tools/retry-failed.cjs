@@ -559,15 +559,27 @@ const main = async () => {
             '\n（開発機なら npm run build、配布版ならパッケージの作り直しが必要です）'
           );
         }
-        execFileSync(process.execPath, [RECOVERY_JS, '--only', '00000000_000000', '--dry-run'], {
-          cwd: ROOT, stdio: 'pipe', timeout: 120_000,
+        // 🔴 **--dry-run で代用しないこと。** recovery 側は !dryRun の中でしか
+        //    初期化しないので、--dry-run は config.json も土台画像も magick も
+        //    一切触らずに 0 を返す。以前それを根拠にしていたため、合成が絶対に
+        //    失敗する環境でも canRebuild = true になり、壊れたカードを退避して
+        //    参照をプレースホルダへ倒したうえで作り直しに失敗していた
+        //    （＝下のコメントが防ごうとしている「純粋な劣化」そのもの）。
+        //    --check-compose は config・土台画像・フォント・magick の起動まで見る。
+        const probe = execFileSync(process.execPath, [RECOVERY_JS, '--check-compose'], {
+          cwd: ROOT, stdio: 'pipe', timeout: 120_000, encoding: 'utf8',
           env: withMagickPath({ ...process.env, KIDSPG_RESULTS_DIR: resultsDir }),
         });
+        for (const line of String(probe).split(/\r?\n/)) if (line.trim()) log('  ' + line.trim());
       } catch (e) {
         canRebuild = false;
         log('');
-        log(`!! カードの合成（npm run recovery）が使えません: ${e.message}`);
-        log('   node_modules や ImageMagick を確認してください。作り直せないので、壊れたカードの退避は行いません');
+        log(`!! カードの合成が使えません: ${e.message}`);
+        // 中の点検結果（どれが NG だったか）を見せる。当日その場で判断できるように
+        for (const chunk of [e.stdout, e.stderr]) {
+          for (const line of String(chunk || '').split(/\r?\n/)) if (line.trim()) log('  ' + line.trim());
+        }
+        log('   作り直せないので、壊れたカードの退避は行いません（いまの表示のまま残します）');
       }
     }
 

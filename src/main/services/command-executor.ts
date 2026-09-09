@@ -17,9 +17,23 @@ export interface MagickError {
 
 export class CommandExecutor {
   private readonly timeoutMs: number;
+  /**
+   * magick の実行ファイル。既定は PATH 任せの 'magick'。
+   * 🔴 **当日PC では PATH に入っていない。** 呼び出し側が
+   * `resolveMagickCommand([bundleRoot])` で決めた絶対パスを渡すこと
+   * （理由は services/magick-path.ts の注釈。実測でカードが1枚も
+   * 作られない事故につながる）。
+   */
+  private readonly magickCommand: string;
 
-  constructor(timeoutMs: number = 60000) {
+  constructor(timeoutMs: number = 60000, magickCommand: string = 'magick') {
     this.timeoutMs = timeoutMs;
+    this.magickCommand = magickCommand;
+  }
+
+  /** いま使う magick の場所。点検・ログの表示に使う */
+  getMagickCommand(): string {
+    return this.magickCommand;
   }
 
   async executeMagickScript(scriptPath: string): Promise<ExecutionResult> {
@@ -29,7 +43,7 @@ export class CommandExecutor {
     try {
       const normalizedScriptPath = this.normalizePathForWindows(scriptPath);
       
-      return await this.runCommand('magick', ['-script', normalizedScriptPath]);
+      return await this.runCommand(this.magickCommand, ['-script', normalizedScriptPath]);
       
     } catch (error) {
       console.error('CommandExecutor - Execution failed:', error);

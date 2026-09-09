@@ -25,6 +25,7 @@ import { ExitConfirmationDialog } from './components/ExitConfirmationDialog';
 import { useExitConfirmation } from './hooks/useExitConfirmation';
 // 起動バッチが「準備完了」を実測で判断するための報告（hooks/useReportReady.ts）
 import { useReportReady } from './hooks/useReportReady';
+import { StaffNoticeBanner } from './components/StaffNoticeBanner';
 
 // 画面のレンダリングと副作用を担当するコンポーネント
 const AppContent: React.FC = () => {
@@ -143,6 +144,11 @@ const AppContent: React.FC = () => {
       {/* マウス操作でも「もどる」「終了」ができるようにする（キーボード必須にしない）。
           ゲーム中は GamePage が独自のヘッダを持つので NavBar は出さない。 */}
       {currentScreen !== 'GAME' && <NavBar />}
+
+      {/* main からのスタッフ向けの注意（記録の保存に失敗した等）。
+          ゲーム中も出す——その回の記録が消えたことは、遊び終わる前に
+          スタッフが知る必要がある（components/StaffNoticeBanner の注釈） */}
+      <StaffNoticeBanner />
 
       {renderCurrentScreen()}
       

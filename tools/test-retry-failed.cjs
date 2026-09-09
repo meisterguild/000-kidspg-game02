@@ -390,3 +390,66 @@ test('親（retry-failed）がロックを持っている場合は取り直さ�
   // 親のロックは残したままにする（解放は親の責任）
   assert.ok(fs.existsSync(path.join(resultsDir, '.maintenance.lock')), '親のロックを解放してしまった');
 }));
+// ------------------------------------------------------------------
+// カード合成のルート解決（2026-09-09 の敵対的レビュー指摘）
+//
+// 🔴 ここが1段ずれていたため、retry-failed が委譲するカード合成が
+//    **全環境で 100% 失敗**していた（config.json を <root>/dist/ に探していた）。
+//    tsx 実行だけが正しく、コンパイル済み経路だけが壊れる形だったので、
+//    「コンパイル済みを実際に実行して確かめる」テストにする。
+// ------------------------------------------------------------------
+
+const RECOVERY_JS = path.join(ROOT, 'dist', 'main', 'test', 'memorial-card-recovery.js');
+
+test('コンパイル済みの救済スクリプトは config.json と素材を見つけられる', () => {
+  const out = execFileSync(process.execPath, [RECOVERY_JS, '--check-compose'], {
+    cwd: ROOT, encoding: 'utf8', stdio: 'pipe', timeout: 120_000,
+  });
+  // dist/ を指していた頃はここが <root>\dist\config.json になっていた
+  assert.ok(
+    out.includes(path.join(ROOT, 'config.json')),
+    '設定の場所がリポジトリ直下でない:\n' + out
+  );
+  assert.ok(/OK : 土台画像 \d+ 枚/.test(out), '土台画像を見つけられていない:\n' + out);
+  assert.ok(!out.includes(path.join(ROOT, 'dist', 'config.json')), 'dist を見ている:\n' + out);
+});
+
+test('--check-compose は magick の起動まで確かめる（--dry-run では代用できない）', () => {
+  // magick が無い状態を作る。PATH を空にすると spawn('magick') は ENOENT になる
+  let failed = null;
+  try {
+    execFileSync(process.execPath, [RECOVERY_JS, '--check-compose'], {
+      cwd: ROOT, encoding: 'utf8', stdio: 'pipe', timeout: 120_000,
+      env: { ...process.env, PATH: path.join(ROOT, 'tools'), Path: path.join(ROOT, 'tools') },
+    });
+  } catch (e) {
+    failed = e;
+  }
+  assert.ok(failed, 'magick が無いのに成功した（--dry-run と同じ穴が残っている）');
+  const shown = String(failed.stdout || '') + String(failed.stderr || '');
+  assert.match(shown, /magick を起動できません/, '理由が示されていない:\n' + shown);
+});
+
+test('--dry-run は合成の可否を何も確かめない（だから事前確認に使ってはいけない）', () => {
+  // magick が無くても --dry-run は 0 を返す。この性質が残っていることを明示して固定し、
+  // 「--dry-run に戻す」変更が入ったら上のテストと矛盾するようにする
+  const out = execFileSync(process.execPath, [RECOVERY_JS, '--only', '00000000_000000', '--dry-run'], {
+    cwd: ROOT, encoding: 'utf8', stdio: 'pipe', timeout: 120_000,
+    env: {
+      ...process.env,
+      PATH: path.join(ROOT, 'tools'), Path: path.join(ROOT, 'tools'),
+      KIDSPG_RESULTS_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-dryrun-')),
+    },
+  });
+  assert.ok(!out.includes('magick'), '--dry-run が magick を見るようになった（テストを見直すこと）');
+});
+
+test('事前確認は --check-compose を使っている（--dry-run へ戻していない）', () => {
+  const src = fs.readFileSync(TOOL, 'utf-8');
+  assert.match(src, /'--check-compose'/, '事前確認が --check-compose を呼んでいない');
+  const preflight = src.slice(src.indexOf('let canRebuild'), src.indexOf('壊れたカードの退避'));
+  assert.ok(
+    !preflight.includes("'--dry-run'"),
+    '事前確認が --dry-run に戻っている（何も確かめられない）'
+  );
+});

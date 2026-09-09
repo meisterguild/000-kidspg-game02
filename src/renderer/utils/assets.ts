@@ -64,6 +64,12 @@ const SOUND_ASSET_RELATIVE_PATHS = {
 
 const IMAGE_ASSET_RELATIVE_PATHS = {
   titleGummy01: 'title_gummy_01.png',
+  // カメラが無いときに使う写真。camera-service が使う。
+  // 🔴 以前は camera-service が './assets/images/dummy_photo.png' を直に
+  //    指していたが、Vite の出力は **平坦**（dist/renderer/assets/dummy_photo.png）で
+  //    images/ の階層が無いため必ず 404 になり、灰色の「カメラなし」四角が
+  //    全員のカードに焼かれていた（敵対的レビュー 2026-09-09 の指摘）。
+  dummyPhoto: 'dummy_photo.png',
 
 
 
@@ -106,6 +112,9 @@ export const preloadSpecificAssets = async (assetKeys: AssetKey[]): Promise<void
       const promise = new Promise<void>((resolve) => {
         const timeoutId = setTimeout(() => {
           console.warn(`[Specific] 音声ファイルの読み込みがタイムアウトしました: ${path}`);
+          // 🔴 **黙って通さない。** resolve() で先へ進むのは正しい（ゲームは動く）が、
+          //    失敗した事実は準備確認へ伝える（下の markBackgroundPreloadFailed の注釈）
+          markBackgroundPreloadFailed();
           resolve();
         }, 10000);
 
@@ -120,6 +129,7 @@ export const preloadSpecificAssets = async (assetKeys: AssetKey[]): Promise<void
         const onError = (e: Event) => {
           clearTimeout(timeoutId);
           console.error(`[Specific] 音声ファイルの読み込みに失敗しました: ${path}`, e);
+          markBackgroundPreloadFailed();
           audio.removeEventListener('canplaythrough', onCanPlay);
           audio.removeEventListener('error', onError);
           resolve();
@@ -143,6 +153,7 @@ export const preloadSpecificAssets = async (assetKeys: AssetKey[]): Promise<void
       const promise = new Promise<void>((resolve) => {
          const timeoutId = setTimeout(() => {
           console.warn(`[Specific] 画像ファイルの読み込みがタイムアウトしました: ${path}`);
+          markBackgroundPreloadFailed();
           resolve();
         }, TIMING_CONFIG.comfyuiTimeout);
 
@@ -155,6 +166,7 @@ export const preloadSpecificAssets = async (assetKeys: AssetKey[]): Promise<void
         img.onerror = (e) => {
           clearTimeout(timeoutId);
           console.warn(`[Specific] 画像ファイルの読み込みに失敗しました: ${path}`, e);
+          markBackgroundPreloadFailed();
           resolve();
         };
         img.src = path;

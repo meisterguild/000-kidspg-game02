@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import { BrowserWindow } from 'electron';
 import type { GameResult } from '@shared/types';
 import { CommandExecutor, type ExecutionResult, type MagickError } from './command-executor';
+import { resolveMagickCommand } from './magick-path';
 import { ImageCompositionConfig, type CompositionConfig } from './image-composition-config';
 import { MagickScriptGenerator } from './magick-script-generator';
 import { discardFailedPartial, finalizeCardOutput } from './card-output';
@@ -27,9 +28,13 @@ export class MemorialCardService {
   private readonly scriptGenerator: MagickScriptGenerator;
   private readonly mainWindow: BrowserWindow | null;
 
-  constructor(config: MemorialCardConfig, mainWindow?: BrowserWindow) {
+  constructor(config: MemorialCardConfig, mainWindow?: BrowserWindow, bundleRoot?: string) {
     this.config = config;
-    this.commandExecutor = new CommandExecutor(config.magickTimeout);
+    // 🔴 携帯版 ImageMagick は PATH に入っていない（magick-path.ts の注釈）
+    this.commandExecutor = new CommandExecutor(
+      config.magickTimeout,
+      resolveMagickCommand(bundleRoot ? [bundleRoot] : [])
+    );
     this.imageConfig = new ImageCompositionConfig(config.cardBaseImagesDir);
     this.scriptGenerator = new MagickScriptGenerator();
     this.mainWindow = mainWindow || null;

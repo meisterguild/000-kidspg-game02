@@ -40,6 +40,33 @@ export interface RendererReadiness {
 /** ready.json の中身 */
 export interface ReadinessReport extends RendererReadiness {
   readyAt: string;
+  /**
+   * config.json を読めたか。
+   * 🔴 **これが false だと遊べない。** 読めないと画面は TOP まで出るが、
+   * ゲーム画面は永久に「読み込み中」で止まり、記念カードも1枚も作られない。
+   * それでも TOP が描けてしまうため renderer は「準備できた」と報告し、
+   * さらに comfyui が null になって
+   * 「ComfyUI の設定がありません（意図した構成なら問題ありません）」という
+   * **正反対の注意書き**だけが出ていた（敵対的レビュー 2026-09-09 の指摘）。
+   */
+  configLoaded: boolean;
+  /**
+   * 記念カードの合成が使える見込みか。
+   * 🔴 **false だとカードが1枚も作られない。** results に書けない場合と
+   * 結果は同じなので、同じ重さ（blocker）で扱う。
+   * 当日PC の ImageMagick は PATH に無い携帯版で、しかもアプリは
+   * WMI 経由で起こされるため起動バッチの PATH を受け取れない
+   * （services/magick-path.ts の注釈）。ここに載せないと
+   * 「準備完了と言われたのにカードが0枚」に当日まで気づけない。
+   */
+  memorialCard: {
+    /** config の memorialCard.enabled が真で、サービスを組めたか */
+    ready: boolean;
+    /** 実際に使う magick の場所。'magick' なら PATH 任せ */
+    magickCommand: string;
+    /** magick を起動できたか */
+    magickUsable: boolean;
+  };
   appVersion: string;
   /** 実行の形。electron 本体で dist を読んでいるのか、パッケージ版の exe か */
   packaged: boolean;
@@ -131,6 +158,25 @@ export const classifyReadiness = (
   const notes: string[] = [];
 
   // --- 遊べないもの ---
+  if (!report.configLoaded) {
+    // 🔴 いちばん危ない壊れ方だった。TOP は描けるので renderer は準備完了と言い、
+    //    comfyui が null になるので「意図した構成なら問題ありません」が出ていた
+    blockers.push(
+      'config.json を読み込めていません。ゲーム画面が「読み込み中」で止まり、' +
+        'カードも1枚も作られません（JSON の壊れ・コピー漏れを確認してください）'
+    );
+  }
+  if (!report.memorialCard.ready) {
+    blockers.push(
+      '記念カードの設定がありません（config.json の memorialCard）。' +
+        'カードが1枚も作られません'
+    );
+  } else if (!report.memorialCard.magickUsable) {
+    blockers.push(
+      'ImageMagick を起動できません（' + report.memorialCard.magickCommand + '）。' +
+        'カードが1枚も作られません。当日PCでは bin\\ImageMagick\\magick.exe を使います'
+    );
+  }
   if (!report.results.writable) {
     // カードも results.json も残らない。遊ばせても何も持ち帰れない
     blockers.push(
@@ -184,8 +230,21 @@ export const writeReadiness = async (
   report: ReadinessReport
 ): Promise<void> => {
   const target = readinessFilePath(baseDir);
-  const temp = target + '.tmp';
+  // 🔴 **一時ファイル名を固定しない。** app-ready の中で ComfyUI の疎通を
+  // 最大40秒待つため、その間に「準備できていません」を見たスタッフが
+  // もう一度バッチを叩くと report が2本並走する。固定名だと両方が同じ
+  // .tmp を truncate しながら書き、混ざった JSON が rename されうる——
+  // バッチは ConvertFrom-Json に失敗して「ready.json が壊れている」と出す
+  // （＝正常なのに準備できていない扱い。敵対的レビュー 2026-09-09 の指摘）。
+  // save-config が既に同じ流儀（.tmp-<pid>）を採っているのでそれに揃える。
+  const temp = `${target}.tmp-${process.pid}-${Date.now()}`;
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(temp, JSON.stringify(report, null, 2) + '\n', 'utf8');
-  await fs.rename(temp, target);
+  try {
+    await fs.rename(temp, target);
+  } catch (error) {
+    // 置き換えに失敗したら一時ファイルを残さない（logs が散らかると当日見づらい）
+    await fs.unlink(temp).catch(() => undefined);
+    throw error;
+  }
 };

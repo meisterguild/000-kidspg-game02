@@ -176,6 +176,19 @@ const electronAPI = {
   removeRequestReadyReportListener: () => {
     ipcRenderer.removeAllListeners('request-ready-report');
   },
+  /**
+   * main からのスタッフ向けの注意。
+   * 🔴 以前はこの口が無く、main が送っていた 'startup-warning' を
+   * **誰も購読していなかった**ため、「記録の保存に失敗しました
+   * （この回はランキングに出ません）」が捨てられていた
+   * （敵対的レビュー 2026-09-09 の指摘）。表示は components/StaffNoticeBanner。
+   */
+  onStartupWarning: (callback: (notice: { kind: string; message: string }) => void) => {
+    ipcRenderer.on('startup-warning', (_, data) => callback(data));
+  },
+  removeStartupWarningListener: () => {
+    ipcRenderer.removeAllListeners('startup-warning');
+  },
 
   confirmExit: (confirmed: boolean) => ipcRenderer.invoke('confirm-exit', confirmed),
   onShowExitConfirmation: (callback: (comfyUIStatus: ComfyUIStatus) => void) => {

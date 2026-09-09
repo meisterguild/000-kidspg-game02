@@ -206,7 +206,7 @@ Step 'VC++ 2015-2022 再頒布可能パッケージを取り込む'
 # 🔴 **当日PC は完全オフライン。**「無かった」と当日気づいても取りに行けないので、
 #    Windows 11 なら通常入っているものでも**必ず積む**（約 25MB）。
 #    入っていれば 0_セットアップ.bat の点検が通り、これは使われないままになる。
-$vc = Join-Path $Materials 'prereqVC_redist.x64.exe'
+$vc = Join-Path (Join-Path $Materials 'prereq') 'VC_redist.x64.exe'
 if (Test-Path -LiteralPath $vc) {
     Say ('       すでにあります : {0:N1} MB' -f ((Get-Item $vc).Length / 1MB))
 } else {

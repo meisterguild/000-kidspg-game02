@@ -48,6 +48,8 @@ const healthy = (overrides = {}) => ({
   pid: 1234,
   comfyui: { profile: 'local', baseUrl: 'http://127.0.0.1:8188', healthy: true },
   results: { dir: 'C:\\kidspg\\app\\results', writable: true },
+  configLoaded: true,
+  memorialCard: { ready: true, magickCommand: 'C:\\kidspg\\bin\\ImageMagick\\magick.exe', magickUsable: true },
   ...overrides,
 });
 
@@ -109,6 +111,43 @@ test('AI 変換を意図して切った構成を異常扱いにしない', () =>
   assert.deepStrictEqual(r.blockers, [], '意図した構成を遊べない扱いにしています');
   assert.strictEqual(r.notes.length, 1);
   assert.match(r.notes[0], /意図した構成なら問題ありません/);
+});
+
+/**
+ * 🔴 ここから3件は「準備完了と出るのに遊べない」を塞ぐためのもの。
+ * いずれも 2026-09-09 の敵対的レビューで見つかった経路で、共通点は
+ * **TOP 画面までは描けてしまう**ため renderer 側は準備完了と報告すること。
+ */
+test('config.json が読めていないのは「遊べない」（画面が読み込み中で止まる）', () => {
+  const r = classifyReadiness(healthy({ configLoaded: false }));
+  assert.ok(r.blockers.length >= 1, '遊べないのに開場を止めていません');
+  assert.match(r.blockers.join('\n'), /config\.json/);
+});
+
+test('config が読めないとき、ComfyUI の注意書きが「問題ありません」にならない', () => {
+  // 以前はこの状態で comfyui が null になり、唯一の表示が
+  // 「意図した構成なら問題ありません」だった（正反対の案内）
+  const r = classifyReadiness(healthy({ configLoaded: false, comfyui: null }));
+  assert.ok(r.blockers.length >= 1, 'blocker が立っていません');
+  assert.match(r.blockers.join('\n'), /config\.json/);
+});
+
+test('記念カードの設定が無いのは「遊べない」（カードが1枚も作られない）', () => {
+  const r = classifyReadiness(
+    healthy({ memorialCard: { ready: false, magickCommand: 'magick', magickUsable: true } })
+  );
+  assert.ok(r.blockers.length >= 1);
+  assert.match(r.blockers.join('\n'), /memorialCard/);
+});
+
+test('ImageMagick を起動できないのは「遊べない」（results に書けないのと同じ結果）', () => {
+  const r = classifyReadiness(
+    healthy({ memorialCard: { ready: true, magickCommand: 'magick', magickUsable: false } })
+  );
+  assert.ok(r.blockers.length >= 1, 'カードが0枚になるのに開場を止めていません');
+  assert.match(r.blockers.join('\n'), /ImageMagick/);
+  // 「どこを見ればよいか」まで出す（当日その場で判断するため）
+  assert.match(r.blockers.join('\n'), /magick/);
 });
 
 test('遊べないものと困ることが重なったら、両方を挙げる', () => {

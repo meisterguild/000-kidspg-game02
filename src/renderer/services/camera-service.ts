@@ -1,5 +1,6 @@
 import { WINDOW_CONFIG } from '@shared/utils/constants';
 import type { AppConfig } from '@shared/types';
+import { getImageAssetPath } from '../utils/assets';
 
 export class CameraService {
   private stream: MediaStream | null = null;
@@ -56,16 +57,17 @@ export class CameraService {
       const img = new Image();
       img.crossOrigin = 'anonymous';
       
+      // 🔴 **相対 URL で指さない。** Vite の出力は平坦（images/ の階層が無い）で、
+      //    './assets/images/dummy_photo.png' は必ず 404 になっていた。その結果
+      //    createFallbackImage() の灰色の「カメラなし」四角が全員のカードに
+      //    焼かれる——カメラ無し運用がまるごと壊れていた
+      //    （敵対的レビュー 2026-09-09 の指摘）。
+      //    場所の判断は utils/assets.ts → main の locateAsset に集約する。
+      const dummySrc = await getImageAssetPath('dummyPhoto');
       await new Promise<void>((resolve, reject) => {
         img.onload = () => resolve();
-        img.onerror = reject;
-        // Electronでのアセットパス  
-        if (process.env.NODE_ENV === 'development') {
-          img.src = 'http://localhost:3000/assets/images/dummy_photo.png';
-        } else {
-          // 本番環境ではElectronのリソースパスを使用
-          img.src = './assets/images/dummy_photo.png';
-        }
+        img.onerror = () => reject(new Error(`ダミー写真を読み込めません: ${dummySrc}`));
+        img.src = dummySrc;
       });
 
       // Canvas でリサイズして base64 に変換
