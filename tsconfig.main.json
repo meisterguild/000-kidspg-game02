@@ -5,7 +5,9 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "jsx": "preserve"
   },
   "include": [
@@ -13,7 +15,10 @@
     "src/shared/types/**/*",
     "src/shared/config/**/*",
     "src/shared/utils/constants.ts",
-    "src/shared/utils/helpers.ts"
+    "src/shared/utils/helpers.ts",
+    "src/test/node-image-composition-config.ts",
+    "src/test/node-memorial-card-service.ts",
+    "src/test/memorial-card-recovery.ts"
   ],
   "exclude": [
     "src/renderer"

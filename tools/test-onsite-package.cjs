@@ -576,3 +576,34 @@ test('写真削除ツールは値の書き忘れで全件消さない', () => {
   assert.match(src, /include-unverified/, '確かめられなかったカードの扱いがありません');
   assert.match(src, /確かめられなかった/, 'unknown を完成扱いにしています');
 });
+
+test('カードの合成が npm 無しでできる（当日PCには npm が無い）', () => {
+  // 🔴 以前は `npm run recovery`（tsx で TS ソースを直接実行）を呼んでいた。
+  // 当日PCには npm も node_modules も src/ も無いため、**カードの作り直しが
+  // 構造的に不可能**で、しかもパターンA が成功しても B で必ず落ちるので
+  // 「成功したのに [失敗] と出る」形になっていた（敵対的レビュー 2026-09-09）。
+  const src = fs.readFileSync(path.join(ROOT, 'tools/retry-failed.cjs'), 'utf8');
+  assert.ok(!src.includes("'npm'"), 'まだ npm に依存しています');
+  assert.match(src, /RECOVERY_JS/, 'ビルド済みの合成実装を使っていません');
+  assert.match(src, /process\.execPath/, '同じ node で呼んでいません');
+  // ImageMagick は PATH に無いので自分で足すこと
+  assert.match(src, /withMagickPath/, 'ImageMagick を PATH に足していません');
+
+  // 合成実装が dist に出ていること（tsconfig.main.json の include に入っているか）
+  const tsconfig = JSON.parse(fs.readFileSync(path.join(ROOT, 'tsconfig.main.json'), 'utf8'));
+  assert.ok(
+    tsconfig.include.some((i) => i.includes('memorial-card-recovery')),
+    'tsconfig.main.json が合成実装をビルド対象にしていません'
+  );
+  const built = path.join(ROOT, 'dist/main/test/memorial-card-recovery.js');
+  if (fs.existsSync(path.join(ROOT, 'dist/main'))) {
+    assert.ok(fs.existsSync(built), 'ビルドしても合成実装が dist に出ていません: ' + built);
+  }
+});
+
+test('パッケージの ops には合成実装まで入る', () => {
+  // ops に入れるのは dist/main。その下に test/memorial-card-recovery.js が
+  // 含まれていなければ、当日カードを作り直せない
+  const src = fs.readFileSync(path.join(__dirname, 'make-onsite-package.cjs'), 'utf8');
+  assert.match(src, /dist\/main.*opsDir, 'dist\/main'/s, 'ops に dist/main を入れていません');
+});
