@@ -414,9 +414,15 @@ class ComfyUIWorker {
     });
 
     setTimeout(() => {
-      // アップロード済みのファイル名は使い回す。サーバ上に残っているので、
-      // 送り直すぶんだけ無駄になる（アップロード自体が失敗した回は元から無い）。
-      this.jobQueue.push({ ...job, attempt: attempt + 1 });
+      // 🔴 **先渡しのファイル名は捨てて、上げ直させる。**
+      // 作り直しに回るのは「ComfyUI が再起動された（プロンプトがキューにも
+      // 履歴にも無い）」「通信が続けて失敗した」「出力を取りこぼした」のように、
+      // **サーバ側の状態が疑わしい**ケースばかりで、先に上げた input が
+      // まだあるとは限らない。300x300 の PNG を 127.0.0.1 へ送り直すだけなので
+      // 費用は無視できる（uploadImage は job.imageData から毎回作れる）。
+      const retryJob: JobData = { ...job, attempt: attempt + 1 };
+      delete retryJob.preUploadedFilename;
+      this.jobQueue.push(retryJob);
       if (!this.isProcessing) this.processQueue();
     }, delay);
   }
