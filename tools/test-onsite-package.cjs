@@ -1,0 +1,301 @@
+#!/usr/bin/env node
+/**
+ * 当日PC向けパッケージの「組み立ての決めごと」の単体テスト
+ *
+ *   node --test tools/test-onsite-package.cjs
+ *
+ * ■ 何を守っているか
+ * ここで固定しているのは、**間違えても開発機では気づけない**ことばかり。
+ *
+ *   ・実行時依存の積み忘れ … 依存を1つ落としても**アプリは起動する**。
+ *     ComfyUI へ画像を上げる瞬間（form-data を使う）に初めて落ちるので、
+ *     当日「1枚目のカードだけが出ない」で気づくことになる
+ *   ・package.json の宣言と実物の食い違い … 読んだ人が「入っているはず」と
+ *     思い込む。積んでいない three を require したツールが当日落ちる
+ *   ・配布物に載る未参照画像 … Vite が動的パターンでフォルダの全ファイルを
+ *     出力するため、置いてあるだけで 18.6MB が USB とコピー時間に乗る
+ *
+ * このファイルは実物のコピーはしない（副作用のない判断だけを見る）。
+ * 実際に組み立てられるかは `node tools/make-onsite-package.cjs --app-only` で見る。
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const ROOT = path.resolve(__dirname, '..');
+const {
+  buildOnsitePackageJson,
+  collectRuntimeDeps,
+  findUnsatisfiedRequires,
+  shouldSkipCardBaseEntry,
+  findStrayRendererImages,
+  KNOWN_UNUSED_RENDERER_IMAGES,
+} = require('./onsite-package-lib.cjs');
+
+// ---------------------------------------------------------------- package.json
+
+const samplePkg = () => ({
+  name: 'kidspg-game-2026',
+  version: '1.0.0',
+  description: 'せつめい',
+  main: 'dist/main/main/main.js',
+  scripts: { build: 'tsc', dist: 'electron-builder', lint: 'eslint src' },
+  dependencies: { 'form-data': '^4.0.4', react: '^18.3.0', three: '^0.180.0' },
+  devDependencies: { electron: '^33.0.0', vite: '^6.0.0' },
+  author: { name: 'KidsPG Team' },
+  license: 'MIT',
+});
+
+test('main は必ず残す（Electron 本体がこれを見てアプリを起動する）', () => {
+  const out = buildOnsitePackageJson(samplePkg(), ['form-data']);
+  assert.strictEqual(out.main, 'dist/main/main/main.js');
+});
+
+test('devDependencies とビルド系 scripts は落とす（当日PCに道具が無い）', () => {
+  const out = buildOnsitePackageJson(samplePkg(), ['form-data']);
+  assert.strictEqual(out.devDependencies, undefined);
+  assert.strictEqual(out.scripts.build, undefined);
+  assert.strictEqual(out.scripts.dist, undefined);
+  assert.strictEqual(out.scripts.lint, undefined);
+  // 何もないと npm start を試されるので、ここで起動方法を書いておく
+  assert.match(out.scripts._comment, /start-kidspg\.bat/);
+});
+
+test('dependencies は実際に積んだものだけにする（積んでいない three を宣言しない）', () => {
+  const out = buildOnsitePackageJson(samplePkg(), ['form-data', 'combined-stream']);
+  assert.deepStrictEqual(Object.keys(out.dependencies), ['form-data']);
+  assert.strictEqual(out.dependencies.three, undefined);
+  assert.strictEqual(out.dependencies.react, undefined);
+});
+
+test('private を立てる（当日PCから誤って publish されないように）', () => {
+  assert.strictEqual(buildOnsitePackageJson(samplePkg(), []).private, true);
+});
+
+// ---------------------------------------------------------------- 実行時依存
+
+test('form-data から辿ると、この node_modules にある依存がすべて解決できる', () => {
+  const { packages, missing } = collectRuntimeDeps(path.join(ROOT, 'node_modules'), ['form-data']);
+  assert.deepStrictEqual(missing, [], '解決できない依存があります');
+  assert.ok(packages.includes('form-data'));
+  // form-data が直に要求するもの。ここが落ちると ComfyUI への画像アップロードで死ぬ
+  for (const need of ['combined-stream', 'mime-types', 'asynckit']) {
+    assert.ok(packages.includes(need), need + ' が入っていません');
+  }
+  // renderer 側は Vite が dist へ焼き込むので、辿った先に出てきてはいけない
+  for (const bundled of ['react', 'react-dom', 'three']) {
+    assert.ok(!packages.includes(bundled), bundled + ' は同梱しない');
+  }
+});
+
+test('node_modules に無いものは missing として返す（黙って飛ばさない）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-deps-'));
+  fs.mkdirSync(path.join(dir, 'alpha'));
+  fs.writeFileSync(
+    path.join(dir, 'alpha', 'package.json'),
+    JSON.stringify({ name: 'alpha', dependencies: { bravo: '^1.0.0' } })
+  );
+  const { packages, missing } = collectRuntimeDeps(dir, ['alpha']);
+  assert.deepStrictEqual(packages, ['alpha']);
+  assert.deepStrictEqual(missing, ['bravo']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('依存が環状でも終わる', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-deps-'));
+  for (const [name, dep] of [['a', 'b'], ['b', 'a']]) {
+    fs.mkdirSync(path.join(dir, name));
+    fs.writeFileSync(
+      path.join(dir, name, 'package.json'),
+      JSON.stringify({ name, dependencies: { [dep]: '*' } })
+    );
+  }
+  const { packages, missing } = collectRuntimeDeps(dir, ['a']);
+  assert.deepStrictEqual(packages, ['a', 'b']);
+  assert.deepStrictEqual(missing, []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------- 積み忘れの検出
+
+test('組み込みモジュールと相対 require は積み忘れとみなさない', () => {
+  const src = [
+    "const fs = require('fs');",
+    "const path = require('path');",
+    "const { Worker } = require('worker_threads');",
+    "const x = require('./services/card-output');",
+    "const y = require('../shared/utils/helpers');",
+    "const { app } = require('electron');",
+  ].join('\n');
+  assert.deepStrictEqual(findUnsatisfiedRequires([src], []), []);
+});
+
+test('積んでいない外部モジュールを require していたら名前を挙げる', () => {
+  const src = "const FormData = require('form-data');\nconst sharp = require('sharp');";
+  assert.deepStrictEqual(findUnsatisfiedRequires([src], ['form-data']), ['sharp']);
+});
+
+test('サブパス付きの require はパッケージ名で判断する', () => {
+  const src = "require('form-data/lib/form_data');\nrequire('mime-types/index.js');";
+  assert.deepStrictEqual(findUnsatisfiedRequires([src], ['form-data']), ['mime-types']);
+});
+
+test('スコープ付きパッケージは @scope/name まででまとめる', () => {
+  const src = "require('@aws-sdk/client-s3/dist/index.js');";
+  assert.deepStrictEqual(findUnsatisfiedRequires([src], []), ['@aws-sdk/client-s3']);
+});
+
+test('実際にビルドした dist/main は form-data の依存だけで足りる', () => {
+  const mainDir = path.join(ROOT, 'dist', 'main');
+  if (!fs.existsSync(mainDir)) {
+    // dist が無いのは「まだビルドしていない」だけなので、ここでは落とさない。
+    // 本番の組み立て（make-onsite-package.cjs）は dist が無ければ止まる。
+    return;
+  }
+  const sources = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.js')) sources.push(fs.readFileSync(p, 'utf8'));
+    }
+  };
+  walk(mainDir);
+  const { packages } = collectRuntimeDeps(path.join(ROOT, 'node_modules'), ['form-data']);
+  assert.deepStrictEqual(
+    findUnsatisfiedRequires(sources, packages),
+    [],
+    'dist/main が、同梱しないモジュールを require しています'
+  );
+});
+
+// ---------------------------------------------------------------- 除外の決めごと
+
+test('card_base_images の superseded_* は配布に入れない', () => {
+  assert.strictEqual(shouldSkipCardBaseEntry('superseded_20260902'), true);
+  assert.strictEqual(shouldSkipCardBaseEntry('superseded_20260904/bg-card-rank-01-beginner.png'), true);
+  assert.strictEqual(shouldSkipCardBaseEntry('bg-card-rank-01-beginner.png'), false);
+});
+
+test('現行のカード背景8枚は除外されない（当日ランクごとに全部使う）', () => {
+  const dir = path.join(ROOT, 'card_base_images');
+  const kept = fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith('.png') && !shouldSkipCardBaseEntry(name));
+  assert.strictEqual(kept.length, 8, 'カード背景はランク8段階と1対1で対応している');
+});
+
+// ---------------------------------------------------------------- 未参照画像の見張り
+
+test('昨年の未参照画像が src/renderer/assets/images に戻っていない', () => {
+  const stray = findStrayRendererImages(path.join(ROOT, 'src/renderer/assets/images'));
+  assert.deepStrictEqual(
+    stray,
+    [],
+    '置いてあるだけで dist に載ります（実測 18.6MB）。superseded_2025/ へ移してください'
+  );
+});
+
+test('戻ってきたら気づける（検出そのものが動くことの確認）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-img-'));
+  fs.writeFileSync(path.join(dir, KNOWN_UNUSED_RENDERER_IMAGES[0]), 'x');
+  fs.writeFileSync(path.join(dir, 'title_gummy_01.png'), 'x'); // 今年のものは挙げない
+  assert.deepStrictEqual(findStrayRendererImages(dir), [KNOWN_UNUSED_RENDERER_IMAGES[0]]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('フォルダが無くても落ちない', () => {
+  assert.deepStrictEqual(findStrayRendererImages(path.join(ROOT, 'そんなフォルダは無い')), []);
+});
+
+// ---------------------------------------------------------------- bat の作法
+
+/**
+ * 🔴 **cmd は LF だけの bat を正しく解釈できない。**
+ * 2026-09-09 に 0_setup.bat を LF で書いてしまい、ラベルと括弧のブロックが壊れて
+ * 日本語の行が次々とコマンドとして実行された（'音量とスピーカーの確認' is not
+ * recognized as an internal or external command …）。
+ * .gitattributes でも固定しているが、書き出す側の事故も拾えるようにする。
+ */
+test('当日PC用のスクリプトは CRLF（cmd が LF の bat を解釈できない）', () => {
+  for (const rel of ['tools/onsite/0_setup.bat', 'tools/onsite/verify-copy.ps1', 'start-kidspg.bat', 'stop-kidspg.bat']) {
+    const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const loneLf = (raw.match(/(?<!\r)\n/g) || []).length;
+    assert.strictEqual(loneLf, 0, rel + ' に CR の無い改行が ' + loneLf + ' 個あります');
+  }
+});
+
+test('bat の先頭は ASCII だけ（CP932 のコンソールが UTF-8 を誤読するため）', () => {
+  for (const rel of ['tools/onsite/0_setup.bat', 'start-kidspg.bat', 'stop-kidspg.bat']) {
+    const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    // BOM があると cmd が1行目を実行しようとして失敗する
+    assert.ok(!raw.startsWith('﻿'), rel + ' に BOM があります');
+    const lines = raw.split('\r\n');
+    const mainIndex = lines.findIndex((l) => l.trim() === ':main');
+    assert.ok(mainIndex > 0, rel + ' に :main がありません');
+    // :main より前に非 ASCII があると、chcp 65001 が効く前に読まれて行が割れる
+    // （日本語の2バイト目に 0x7C '|' や 0x26 '&' を含む文字がある）
+    const header = lines.slice(0, mainIndex).join('\n');
+    const bad = [...header].filter((ch) => ch.charCodeAt(0) > 127);
+    assert.deepStrictEqual(bad, [], rel + ' の :main より前に非 ASCII があります');
+  }
+});
+
+test('0_setup.bat は results と logs を消さない（当日の成果物を守る）', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'tools/onsite/0_setup.bat'), 'utf8');
+  // /MIR は出力先を鏡にするので、当日の results を消してしまう
+  assert.ok(!/robocopy[^\r\n]*\/MIR/.test(raw), '/MIR を使うと results が消えます');
+  assert.match(raw, /\/XD results logs/, 'results と logs を除外していません');
+});
+
+test('0_setup.bat は置き場所の食い違いを検出して止まる', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'tools/onsite/0_setup.bat'), 'utf8');
+  // config.json の中の絶対パスが manifest の target を前提にしているため、
+  // 違う場所へ入れたら黙って進めてはいけない
+  assert.match(raw, /manifest\.json/);
+  assert.match(raw, /PKG_TARGET/);
+});
+
+// ---------------------------------------------------------------- 資材の目録
+
+test('外部資材の目録は必要な項目を持ち、venv を持ち込まない決めごとが書かれている', () => {
+  const def = JSON.parse(fs.readFileSync(path.join(__dirname, 'onsite-materials.json'), 'utf8'));
+  const keys = def.materials.map((m) => m.key);
+  for (const need of ['models', 'comfyui', 'python_embeded', 'imagemagick', 'node']) {
+    assert.ok(keys.includes(need), need + ' が目録にありません');
+  }
+  for (const m of def.materials) {
+    assert.ok(m.dest, m.key + ' に dest がありません');
+    assert.ok(m.note, m.key + ' に入手元・注意（note）がありません');
+    assert.ok(m.kind === 'dir' || m.kind === 'file', m.key + ' の kind が不正です');
+  }
+  // venv をコピーで持ち込むと pyvenv.cfg の home がユーザー名を指していて壊れる。
+  // その判断が目録から消えないように縛る
+  const comfy = def.materials.find((m) => m.key === 'comfyui');
+  assert.ok(comfy.mustNotContain.includes('venv'), 'venv を入れない決めごとが消えています');
+  assert.ok(comfy.mustContain.includes('main.py'));
+
+  // モデルは local プロファイルの4本。サイズ照合が効いていること
+  const models = def.materials.find((m) => m.key === 'models');
+  assert.strictEqual(models.files.length, 4);
+  for (const f of models.files) {
+    assert.ok(f.expectedBytes > 0, f.path + ' の期待サイズが埋まっていません');
+  }
+});
+
+test('目録のモデル4本は config.json のワークフローが要求するものと一致する', () => {
+  const def = JSON.parse(fs.readFileSync(path.join(__dirname, 'onsite-materials.json'), 'utf8'));
+  const models = def.materials.find((m) => m.key === 'models');
+  const names = models.files.map((f) => path.basename(f.path));
+  const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+  const templatePath = config.comfyui.profiles.local.templatePath;
+  const workflow = fs.readFileSync(path.join(ROOT, templatePath), 'utf8');
+  for (const name of names) {
+    assert.ok(
+      workflow.includes(name),
+      name + ' が local のワークフローから参照されていません（目録が古い可能性）'
+    );
+  }
+});

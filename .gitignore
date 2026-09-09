@@ -102,3 +102,6 @@ docs/ranking_ux_bug1.png
 # 差し替え前のカード背景。今年の意匠の変遷だが**今回は使わない**ため追跡しない
 # （2026-09-08 判断。ファイルはローカルに残してある）
 card_base_images/superseded_*/
+# 当日PC向けの配布パッケージ（作成物そのものは追跡しない。
+# 作り方は tools/make-onsite-package.cjs、設計は docs/distribution-plan.md）
+/onsite-package/

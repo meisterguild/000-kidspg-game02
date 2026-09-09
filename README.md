@@ -558,6 +558,11 @@ kidspg-game-2026/
 | `test-exit-path.cjs` | 終了経路の配線（確認ダイアログ・プロセスが残らないこと）の検査 |
 | `test-stage-balance.mjs` | ステージ構成とランク閾値・難所の数の対応の検査 |
 | `measure-stages.mjs` | 盤面生成の実測（グミ数・難所の数・閾値の候補） |
+| `make-onsite-package.cjs` | 当日PC向けの持ち出しパッケージを作る（USB 用） |
+| `onsite-package-lib.cjs` | パッケージの組み立ての決めごと（何を入れ、何を落とすか） |
+| `onsite-materials.json` | リポジトリの外の資材の入手元と期待サイズ |
+| `onsite/0_setup.bat` | 当日PCで実行するセットアップ（コピーと点検だけ） |
+| `test-onsite-package.cjs` | パッケージの組み立ての決めごとの単体テスト |
 | `notify.sh` | 作業の節目をスマホへ通知（ntfy） |
 | `dl-models-local.sh` | **local プロファイル用（SD1.5・4本）** のモデルを HuggingFace から取得（サイズ検証つき） |
 | `dl-models.sh` | server プロファイル用（SDXL・5本）のモデルを HuggingFace から取得 |
@@ -634,6 +639,8 @@ npm run recovery:dry   # 上のドライラン
 | 内容 | パス |
 |---|---|
 | **残課題（判断待ち・未実施のもの）** | **[docs/open-issues-20260904.md](docs/open-issues-20260904.md)** |
+| **当日PCへのセットアップ手順（USB から）** | **[docs/setup-onsite.md](docs/setup-onsite.md)** |
+| 配布パッケージの設計（exe を作らない理由ほか） | [docs/distribution-plan.md](docs/distribution-plan.md) |
 | ソースコードレビューの結果と対応 | [docs/code-review-20260903.md](docs/code-review-20260903.md) |
 | 2025年版残骸のクリーニング計画 | [docs/cleanup-plan-20260904.md](docs/cleanup-plan-20260904.md) |
 | 計画書（残日数・撤退ライン・判断事項） | `../docs/計画書.md` |

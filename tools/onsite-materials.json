@@ -1,0 +1,60 @@
+{
+  "_comment": "当日PC向けパッケージに要る『リポジトリの外の資材』の一覧。tools/make-onsite-package.cjs がこれを見て、揃っているか・サイズが合っているかを確かめる。リポジトリには置かない（合計 6GB 超あり、ライセンスも別）。集める先は既定で C:/WORK/AI/onsite-materials（--materials で変えられる）。期待サイズは実機のファイルと突き合わせて埋めること。0 のままの項目は『サイズ未確認』として警告つきで通す。",
+  "_size_policy": "expectedBytes は実測して埋める。dl-models-local.sh と同じ流儀で、途中で切れたファイルを掴んだまま当日を迎えないようにするため。",
+  "materials": [
+    {
+      "key": "models",
+      "dest": "ai/models",
+      "kind": "dir",
+      "required": true,
+      "note": "local プロファイル（CPU実行・SD1.5）用の4本だけ。server 用の SDXL は積まない（2026-09-09 判断）。取得は bash tools/dl-models-local.sh <materials>/ai/models",
+      "files": [
+        { "path": "checkpoints/DreamShaper_8_pruned.safetensors", "expectedBytes": 2132625894 },
+        { "path": "vae/sd-vae-ft-mse.safetensors", "expectedBytes": 334643276 },
+        { "path": "controlnet/control_v11p_sd15_canny.safetensors", "expectedBytes": 1445157124 },
+        { "path": "loras/Hyper-SD15-8steps-CFG-lora.safetensors", "expectedBytes": 269127064 }
+      ]
+    },
+    {
+      "key": "comfyui",
+      "dest": "ai/ComfyUI",
+      "kind": "dir",
+      "required": true,
+      "note": "ComfyUI 本体（0.34.0 で動作確認）。venv は入れないこと——pyvenv.cfg の home がユーザー名込みの絶対パスを指すため、別PCへコピーすると壊れる。代わりに python_embeded を使う。",
+      "mustContain": ["main.py", "extra_model_paths.yaml"],
+      "mustNotContain": ["venv"]
+    },
+    {
+      "key": "python_embeded",
+      "dest": "ai/python_embeded",
+      "kind": "dir",
+      "required": true,
+      "note": "埋め込み配布版 Python 3.12（zip 展開のみ・レジストリを触らない）に torch CPU と ComfyUI の依存を入れたもの。ComfyUI 公式ポータブルと同じ方式で、インストール操作なしでコピーして動く。組み方は docs/distribution-plan.md。",
+      "mustContain": ["python.exe"]
+    },
+    {
+      "key": "imagemagick",
+      "dest": "bin/ImageMagick",
+      "kind": "dir",
+      "required": true,
+      "note": "ImageMagick 7 の携帯版（portable Q16 x64 の zip を展開したもの）。https://imagemagick.org/script/download.php#windows 。**これが無いとカードが1枚も出ない**。インストール版でも動くが、当日PCでインストール操作をしない方針なので携帯版を積む。",
+      "mustContain": ["magick.exe"]
+    },
+    {
+      "key": "node",
+      "dest": "ops/node",
+      "kind": "dir",
+      "required": true,
+      "note": "Node.js の携帯版（node-vXX-win-x64.zip を展開したもの）。https://nodejs.org/en/download/prebuilt-binaries 。当日の救済ツール（再生成・写真削除）を動かすのに使う。",
+      "mustContain": ["node.exe"]
+    },
+    {
+      "key": "vc_redist",
+      "dest": "prereq/VC_redist.x64.exe",
+      "kind": "file",
+      "required": false,
+      "expectedBytes": 0,
+      "note": "torch が要求する VC++ 2015-2022 再頒布可能パッケージ。Windows 11 なら通常入っているので、点検で不足していたときだけ使う。これだけはインストール操作が要る。https://aka.ms/vs/17/release/vc_redist.x64.exe"
+    }
+  ]
+}

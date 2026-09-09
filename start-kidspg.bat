@@ -29,7 +29,7 @@ rem
 rem  やること
 rem    1. 実行場所の点検（OneDrive 配下だとカード生成が失敗しうる）
 rem    2. ImageMagick（記念カードの合成に必須）の確認
-rem    3. アプリ本体の確認と、ビルドが古くないかの確認
+rem    3. アプリ本体（Electron 本体 + dist）の確認と、ビルドが古くないかの確認
 rem    4. ComfyUI（AI画像変換）の確認と、止まっていれば起動
 rem    5. 二重起動の確認
 rem    6. アプリ起動
@@ -38,8 +38,11 @@ rem  動作確認だけしたいとき（何も起動しない）:  start-kidspg
 rem  別の場所の exe を使いたいとき:  set KIDSPG_APP_EXE=D:\kidspg\KidsPGグミパズル.exe
 rem ============================================================
 
+rem ComfyUI の置き場所は **config.json の comfyui...paths.root が正**。
+rem ここに書いてあるのは、config.json に paths が無かったときの控え（開発機の既定）。
+rem [4/6] で config.json を読んだ時点で上書きされる。2箇所に本物を持つと、
+rem 当日 PC の置き場所を変えたときに片方だけ直して気づかない。
 set "COMFY_DIR=C:\WORK\AI\ComfyUI_20260902_0.34.0\ComfyUI"
-set "COMFY_PY=%COMFY_DIR%\venv\Scripts\python.exe"
 set "COMFY_PORT=8188"
 rem ComfyUI の起動を待つ秒数（CPU実行なので初回は時間がかかる）
 set "COMFY_WAIT=180"
@@ -76,10 +79,14 @@ rem     本体（electron.exe）が未署名なので、パッケージ版も np
 set "SAC="
 for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "try{ (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -ErrorAction Stop).VerifiedAndReputablePolicyState }catch{ 0 }"`) do set "SAC=%%A"
 if "!SAC!"=="1" (
-  echo        [警告] Smart App Control が有効です。このPCでは署名の無いアプリを起動できません。
-  echo               Windows セキュリティ ^> アプリとブラウザーの制御 ^> スマート アプリ コントロール
-  echo               を「オフ」にしてください（※一度オフにすると、Windows を入れ直すまで戻せません）。
-  echo               ブロックされた記録: イベントビューアー ^> Microsoft-Windows-CodeIntegrity/Operational
+  echo        [注意] Smart App Control が有効です。
+  echo               この起動方法（Electron 本体で dist を読む）は、SAC が有効なままでも
+  echo               実績があります。まずはそのまま進めてください。
+  echo               ＊ もしアプリが起動せず何も出ない場合は、SAC が弾いています。
+  echo                  ブロックされた記録: イベントビューアー ^> Microsoft-Windows-CodeIntegrity/Operational
+  echo                  その場合の確実な対処は SAC をオフにすること
+  echo                  （Windows セキュリティ ^> アプリとブラウザーの制御 ^> スマート アプリ コントロール）。
+  echo                  ※一度オフにすると、Windows を入れ直すまで戻せません。
   set /a WARN+=1
 ) else (
   echo        OK : Smart App Control はアプリの起動を止めません
@@ -88,6 +95,14 @@ echo.
 
 rem ------------------------------------------------------------
 echo [2/6] ImageMagick の確認（記念カードの合成に必要）
+rem 配布版は ImageMagick を**インストールせず**、隣の bin\ImageMagick に携帯版を置く。
+rem PATH を恒久的に書き換えず、この起動のあいだだけ先頭に足す。
+rem 子プロセス（Electron → magick）はこの PATH を受け継ぐので、
+rem アプリからの合成もこれで通る。開発機のようにインストール済みなら何も変わらない。
+if exist "%~dp0..\bin\ImageMagick\magick.exe" (
+  set "PATH=%~dp0..\bin\ImageMagick;!PATH!"
+  echo        携帯版を使います : %~dp0..\bin\ImageMagick
+)
 where magick > nul 2>&1
 if errorlevel 1 (
   echo        [警告] magick が見つかりません。記念カードが1枚も作られません。
@@ -104,15 +119,23 @@ echo.
 rem ------------------------------------------------------------
 echo [3/6] アプリ本体の確認
 rem 起動のしかたは2通り。
-rem   exe      … パッケージ版（release\win-unpacked\*.exe）を起動する
-rem   electron … Electron 本体に、このフォルダのアプリを読ませて起動する
-rem              （Smart App Control は自作 exe を弾くが、Electron 本体は通す）
-rem KIDSPG_MODE で明示指定できる。既定は「SAC が有効なら electron、そうでなければ exe」。
+rem   electron … Electron 本体に、このフォルダのアプリ（dist\）を読ませて起動する ← 既定
+rem   exe      … electron-builder が作った exe（release\win-unpacked\*.exe）を起動する
+rem
+rem  🔴 **既定は electron。exe は作らない方針**（2026-09-09 判断）。
+rem  electron-builder が作る exe は「署名が無く、世の中に出回っていない新品の exe」に
+rem  なるため、Windows 11 の Smart App Control に弾かれる。Electron 本体
+rem  （node_modules\electron\dist\electron.exe）も署名は無いが、広く使われている
+rem  バイナリなので評価（レピュテーション）で通る——この開発機は SAC が有効な状態で
+rem  npm start が通っており、その経路の実績がある。
+rem  ⚠️ ただし「評価で通る」は保証ではない。当日PCで弾かれた場合の確実な答えは
+rem  SAC をオフにすること（一度オフにすると Windows を入れ直すまで戻せない）。
+rem
+rem  exe を試したいときだけ  set KIDSPG_MODE=exe  で切り替える。
 set "LAUNCH_MODE="
 if /i "%KIDSPG_MODE%"=="electron" set "LAUNCH_MODE=electron"
 if /i "%KIDSPG_MODE%"=="exe" set "LAUNCH_MODE=exe"
-if not defined LAUNCH_MODE if "!SAC!"=="1" set "LAUNCH_MODE=electron"
-if not defined LAUNCH_MODE set "LAUNCH_MODE=exe"
+if not defined LAUNCH_MODE set "LAUNCH_MODE=electron"
 
 set "ELECTRON_EXE=%~dp0node_modules\electron\dist\electron.exe"
 if "!LAUNCH_MODE!"=="electron" goto :check_electron
@@ -170,16 +193,25 @@ goto :app_checked
 
 rem --- Electron 本体でこのフォルダのアプリを起動する場合の点検
 :check_electron
-echo        起動方法  : Electron 本体（パッケージ版の exe は使いません）
+echo        起動方法  : Electron 本体（exe は使いません）
 if not exist "%ELECTRON_EXE%" (
   echo        [中止] Electron 本体が見つかりません : %ELECTRON_EXE%
-  echo               npm install を実行してください。
+  if exist "%~dp0src" (
+    echo               開発機です。npm install を実行してください。
+  ) else (
+    echo               コピーが不完全です。node_modules\electron\ が丸ごと必要です。
+    echo               USB から 0_セットアップ.bat をやり直してください。
+  )
   set /a WARN+=1
   goto :summary
 )
 if not exist "%~dp0dist\main\main\main.js" (
   echo        [中止] ビルド結果がありません : dist\main\main\main.js
-  echo               npm run build を実行してください。
+  if exist "%~dp0src" (
+    echo               開発機です。npm run build を実行してください。
+  ) else (
+    echo               コピーが不完全です。USB から 0_セットアップ.bat をやり直してください。
+  )
   set /a WARN+=1
   goto :summary
 )
@@ -205,10 +237,20 @@ echo [4/6] ComfyUI（AI画像変換）の確認
 set "PROFILE="
 set "BASEURL="
 rem PowerShell 5.1 は BOM 無しの UTF-8 を ANSI と誤解するので -Encoding UTF8 が要る
-for /f "usebackq tokens=1,* delims=;" %%A in (`powershell -NoProfile -Command "try{ $c=(Get-Content -Raw -Encoding UTF8 '%~dp0config.json' | ConvertFrom-Json).comfyui; $c.activeProfile + ';' + $c.profiles.($c.activeProfile).baseUrl }catch{ 'fumei;fumei' }"`) do (
+rem paths はプロファイル側が優先。無ければ共通側（comfyui-config.ts と同じ扱い）
+for /f "usebackq tokens=1,2,* delims=;" %%A in (`powershell -NoProfile -Command "try{ $c=(Get-Content -Raw -Encoding UTF8 '%~dp0config.json' | ConvertFrom-Json).comfyui; $p=$c.profiles.($c.activeProfile).paths; if(-not $p){ $p=$c.paths }; $c.activeProfile + ';' + $c.profiles.($c.activeProfile).baseUrl + ';' + $p.root }catch{ 'fumei;fumei;' }"`) do (
   set "PROFILE=%%A"
   set "BASEURL=%%B"
+  set "CFG_ROOT=%%C"
 )
+if defined CFG_ROOT set "COMFY_DIR=!CFG_ROOT!"
+
+rem Python の場所は2通りある。**配布版は埋め込み Python**（インストール不要）で、
+rem 開発機は venv。どちらでも動くよう、あるほうを使う。
+set "COMFY_PY="
+if exist "!COMFY_DIR!\..\python_embeded\python.exe" set "COMFY_PY=!COMFY_DIR!\..\python_embeded\python.exe"
+if not defined COMFY_PY if exist "!COMFY_DIR!\venv\Scripts\python.exe" set "COMFY_PY=!COMFY_DIR!\venv\Scripts\python.exe"
+if not defined COMFY_PY set "COMFY_PY=!COMFY_DIR!\venv\Scripts\python.exe"
 echo        使用プロファイル : !PROFILE!  ^(!BASEURL!^)
 
 call :is_port_open
@@ -225,9 +267,12 @@ if /i not "!PROFILE!"=="local" (
   goto :comfy_done
 )
 
-if not exist "%COMFY_PY%" (
-  echo        [警告] ComfyUI が見つかりません : %COMFY_DIR%
-  echo               このまま進めると、カードは「本人の写真」で作られます。
+if not exist "!COMFY_PY!" (
+  echo        [警告] ComfyUI の Python が見つかりません。
+  echo               探した場所 : !COMFY_DIR!\..\python_embeded\python.exe
+  echo                            !COMFY_DIR!\venv\Scripts\python.exe
+  echo               config.json の comfyui...paths.root を確認してください。
+  echo               このまま進めると、カードはプレースホルダで作られます。
   set /a WARN+=1
   goto :comfy_done
 )
@@ -242,10 +287,10 @@ rem 代わりに出力はログへ落として、後から見られるように�
 if not exist "%~dp0logs" mkdir "%~dp0logs"
 echo        ComfyUI を起動します（CPU実行・画面は出ません）
 echo        ログ : %~dp0logs\comfyui.log
-set "LD_EXE=%COMFY_PY%"
+set "LD_EXE=!COMFY_PY!"
 set "LD_RAWARGS=main.py --cpu --listen 127.0.0.1 --port %COMFY_PORT% --disable-auto-launch"
 set "LD_PATHARG="
-set "LD_CWD=%COMFY_DIR%"
+set "LD_CWD=!COMFY_DIR!"
 set "LD_LOG=%~dp0logs\comfyui.log"
 set "LD_HIDE=1"
 call :launch_detached
