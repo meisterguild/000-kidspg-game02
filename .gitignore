@@ -76,12 +76,12 @@ docs/memorial_site_src/
 
 # 昨年の「よけまくり中」用アセット。今年は参照していない
 # （assets.ts のコメントも「昨年のタイトルなので参照しない」と明記）
-src/renderer/assets/images/title_image_01.png
-src/renderer/assets/images/title_image_02.png
-src/renderer/assets/images/title_image_03.png
-src/renderer/assets/images/title_image_04.png
-src/renderer/assets/images/sprite_items.png
-src/renderer/assets/images/sprite_items.xcf
+#
+# 2026-09-09 に src/renderer/assets/images/ から superseded_2025/ へ**移動**した。
+# assets.ts は new URL(`../assets/images/${relativePath}`, import.meta.url) という
+# 動的パターンで画像を読むため、**Vite はあのフォルダの全ファイルを dist へ出力する**。
+# 参照が無くても置いてあるだけで配布物に載り、19.6MB を当日PCへコピーすることになっていた。
+superseded_2025/
 
 # 昨年のスプライト確認ページ。存在しないアセットキーを参照していて
 # **コンパイルが通らない**ため tsconfig の exclude で型検査から外されている。
