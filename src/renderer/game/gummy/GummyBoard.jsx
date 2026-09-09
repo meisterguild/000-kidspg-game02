@@ -193,6 +193,7 @@ function disposeStage(c) {
  */
 export default function GummyBoard({
   stage, path, movable, cleared, onPick, onReject, onLanded, shakeRef, hudOverlay = true,
+  plane = false,
 }) {
   const mountRef = useRef(null);
   const ctx = useRef(null);
@@ -202,12 +203,16 @@ export default function GummyBoard({
   const landedRef = useRef(onLanded);
   // fit() はマウント時に1回だけ作る関数なので、最新の値は ref 経由で読む
   const overlayRef = useRef(hudOverlay);
+  // 盤面の作り。マウント時1回の初期化からも読むので ref に置く
+  // （プレイ中に切り替わることはない。切り替えは次のプレイから効く）
+  const planeRef = useRef(plane);
 
   pickRef.current = onPick;
   rejectRef.current = onReject;
   landedRef.current = onLanded;
   overlayRef.current = hudOverlay;
-  live.current = { stage, path, movable, cleared, pathSet: new Set(path) };
+  planeRef.current = plane;
+  live.current = { stage, path, movable, cleared, pathSet: new Set(path), plane };
 
   /* --- 初期化（マウント時1回） --- */
   useEffect(() => {
@@ -346,7 +351,13 @@ export default function GummyBoard({
     cube.add(ctx.current.syrup);
 
     /* --- 盤面がUIに隠れず、縦横どちらでも収まるようにカメラを合わせる --- */
-    const VIEW_DIR = new THREE.Vector3(7.6, 6.4, 8.6).normalize();
+    // 立方体は3面を同時に見せる斜め視点。**平面はほぼ正面から見る**
+    // （斜めから見ると平行四辺形に潰れて盤面が読めなくなる）。
+    // わずかに傾けるのは、完全な正面だと立体感が消えてグミが平板に見えるため。
+    const VIEW_DIR = (planeRef.current
+      ? new THREE.Vector3(0.6, 1.1, 9)
+      : new THREE.Vector3(7.6, 6.4, 8.6)
+    ).normalize();
     // fit() の中で使い回す作業用ベクトル（毎フレームは呼ばれないが確保は1度でよい）
     const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
     const fit = () => {
@@ -745,15 +756,19 @@ export default function GummyBoard({
     // 内側のゼリーコア。
     // 紫にすると背景（紫のグラデーション）に溶けてキューブの形が分からなくなるため、
     // 背景から離れた青系にして輪郭が立つようにしている。
-    c.core = new THREE.Mesh(
-      squircleGeometry(N / 2 - 0.09, 7, 3),
-      new THREE.MeshPhysicalMaterial({
-        color: 0x2f6be0, roughness: 0.3, metalness: 0,
-        clearcoat: 0.9, transparent: true, opacity: 0.94,
-        emissive: 0x0b2a6b, emissiveIntensity: 0.35,
-      })
-    );
-    c.cube.add(c.core);
+    // 平面では出さない。1面しか無いのに立方体の胴体があると、
+    // グミが宙に浮いた板の上に乗っているように見えて意味が通らない。
+    if (!live.current.plane) {
+      c.core = new THREE.Mesh(
+        squircleGeometry(N / 2 - 0.09, 7, 3),
+        new THREE.MeshPhysicalMaterial({
+          color: 0x2f6be0, roughness: 0.3, metalness: 0,
+          clearcoat: 0.9, transparent: true, opacity: 0.94,
+          emissive: 0x0b2a6b, emissiveIntensity: 0.35,
+        })
+      );
+      c.cube.add(c.core);
+    }
 
     // グミ本体
     const gGeo = squircleGeometry(0.4, 4, 3);
@@ -965,9 +980,11 @@ export default function GummyBoard({
       ));
     }
 
-    // 面の向きに合わせてキューブを傾ける
+    // 面の向きに合わせてキューブを傾ける。
+    // 平面は面が1つなので傾ける相手がおらず、傾けると盤面が読みにくくなるだけ
     const face = cur[0];
-    const e = face === 'F' ? new THREE.Euler(0, 0.19, 0)
+    const e = live.current.plane ? new THREE.Euler(0, 0, 0)
+      : face === 'F' ? new THREE.Euler(0, 0.19, 0)
       : face === 'R' ? new THREE.Euler(0, -0.19, 0)
       : new THREE.Euler(0.17, 0, 0);
     c.targetQ.setFromEuler(e);

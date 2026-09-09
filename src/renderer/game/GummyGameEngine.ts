@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { AppConfig } from '@shared/types';
+import type { BoardMode } from '../contexts/GameSessionContext';
 // 3Dグミパズル本体（React コンポーネント）
 import GummyGame from './gummy/GummyGame';
 
@@ -20,6 +21,11 @@ import GummyGame from './gummy/GummyGame';
  */
 export class GummyGameEngine {
   private config: AppConfig;
+  /**
+   * 盤面の作り。GummyGame は createRoot で**別の React ルート**へマウントするため、
+   * Context が届かない。プレイ1回ぶんの選択なので props で渡す。
+   */
+  private boardMode: BoardMode;
   private root: Root | null = null;
   /**
    * React ルートは container 直下ではなく、専用に作った子要素へマウントする。
@@ -35,8 +41,9 @@ export class GummyGameEngine {
   private gameOverCallback: ((score: number) => void) | null = null;
   private escapeCallback: (() => void) | null = null;
 
-  constructor(config: AppConfig) {
+  constructor(config: AppConfig, boardMode: BoardMode = 'cube') {
     this.config = config;
+    this.boardMode = boardMode;
   }
 
   async initialize(container: HTMLElement): Promise<void> {
@@ -55,6 +62,7 @@ export class GummyGameEngine {
     this.root.render(
       React.createElement(GummyGame, {
         config: this.config,
+        boardMode: this.boardMode,
         onScoreChange: (s: number) => { this.score = s; },
         onLevelChange: (n: number) => { this.level = n; },
         // コールバックは initialize の後に差し込まれるので、毎回 this 経由で引く

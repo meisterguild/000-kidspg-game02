@@ -25,6 +25,16 @@ export interface GameResult {
   memorialCardPath?: string;
 }
 
+/** ステージ1面ぶんの出題設定 */
+export interface StagePlan {
+  size: number;
+  /** core.js の DIFFICULTY のキー */
+  difficulty: 'veasy' | 'easy' | 'normal' | 'hard' | 'vhard'
+    // 平面モード用（平面で測り直した目標を持つ）
+    | 'peasy' | 'pnormal' | 'phard';
+  multiplier: number;
+}
+
 // ゲーム設定の型定義
 export interface AppConfig {
   game: {
@@ -33,11 +43,7 @@ export interface AppConfig {
     /** 進行中ステージの部分点率（そのステージで到達した最大の食数 × 係数 × この値） */
     partialScoreRate: number;
     /** ステージ進行。クリアごとに次の要素へ進む */
-    stageProgression: Array<{
-      size: number;
-      difficulty: 'veasy' | 'easy' | 'normal' | 'hard';
-      multiplier: number;
-    }>;
+    stageProgression: StagePlan[];
     /** 1プレイで出題する最大ステージ数（repeatLastStage による青天井を防ぐ） */
     maxStages?: number;
     /** 最終ステージをクリア後も同設定で出題し続けるか */
@@ -49,6 +55,18 @@ export interface AppConfig {
     rankThresholds?: number[];
     /** レベル表示の算出間隔（helpers.calculateLevel が参照） */
     levelUpScoreInterval: number;
+    /**
+     * 平面モード。立方体の3面ではなく正面1面だけを使う（3歳以上を対象に加えたため）。
+     * 運営が TOP から選び、**1プレイだけ有効**で次の子には持ち越さない。
+     * 省略時は平面モードを出さない。上の設定（立方体側）とは独立に持つ。
+     */
+    plane?: {
+      stageProgression: StagePlan[];
+      maxStages?: number;
+      repeatLastStage?: boolean;
+      /** 平面専用のランク閾値。平面は1面あたりのグミが約1/3なので立方体の値では上がらない */
+      rankThresholds?: number[];
+    };
   };
   /**
    * ComfyUI 設定。ローカルPC(GPU無し)と AIサーバー(GPU有り)を activeProfile で切り替える。

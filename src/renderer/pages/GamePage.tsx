@@ -9,7 +9,7 @@ import { useWideLayout } from '../hooks/useWideLayout';
 
 const GamePage: React.FC = () => {
   
-  const { handleGameEnd, resultDir, resetGameState } = useGameSession();
+  const { handleGameEnd, resultDir, resetGameState, boardMode } = useGameSession();
   const { config, loading: configLoading, error: configError } = useConfig();
   const { setCurrentScreen } = useScreen();
   // 横に余白のある画面（PCモニタ）ではプレイエリアを縦いっぱいに使い、HUD は左右へ逃がす
@@ -96,7 +96,7 @@ const GamePage: React.FC = () => {
               return;
             }
             try {
-              const gameEngine = new GummyGameEngine(config);
+              const gameEngine = new GummyGameEngine(config, boardMode);
               
               // gameContainerRef.current はこの時点で存在するはず
               const container = gameContainerRef.current;
@@ -201,7 +201,7 @@ const GamePage: React.FC = () => {
       for (const t of endTimersRef.current) clearTimeout(t);
       endTimersRef.current = [];
     };
-  }, [handleGameEnd, config, configError, configLoading, handleEscapeKey]);
+  }, [handleGameEnd, config, configError, configLoading, handleEscapeKey, boardMode]);
 
   return (
     <div className="relative min-h-screen" style={{ overflow: 'hidden' }}>

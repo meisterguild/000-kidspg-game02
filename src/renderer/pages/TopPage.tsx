@@ -3,10 +3,12 @@ import { playSound, preloadSpecificAssets, initializeAudioSystem } from '../util
 import TitleImageCarousel from '../components/TitleImageCarousel';
 import { TOP_PAGE_ASSETS } from '@shared/utils/constants';
 import { useScreen } from '../contexts/ScreenContext';
+import { useGameSession } from '../contexts/GameSessionContext';
 import ShinyWaveBackground from '../components/ShinyWaveBackground';
 
 const TopPage: React.FC = () => {
   const { setCurrentScreen } = useScreen();
+  const { boardMode } = useGameSession();
 
   // トップページアセットのプリロード
   useEffect(() => {
@@ -70,6 +72,15 @@ const TopPage: React.FC = () => {
             <p>ぜんぶ食べて ゴールのグミへ！</p>
           </div>
         </div>
+
+        {/* 平面モードを選んでいることを、押した本人がその場で気づけるように出す。
+            誤って押した場合の取り返しがつくのはここだけ（次の1プレイに効いてしまう）。 */}
+        {boardMode === 'plane' && (
+          <p className="text-lg font-bold text-amber-950 bg-amber-300/90 border-2 border-amber-500
+                        rounded-2xl px-4 py-2">
+            へいめんモードで はじめます
+          </p>
+        )}
 
         <button 
           className="game-button"

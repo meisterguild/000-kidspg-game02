@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import GummyBoard from './GummyBoard';
-import { DIFFICULTY, generateStage, movableFrom } from './core';
+import { DIFFICULTY, PLANE_FACES, generateStage, movableFrom } from './core';
 import { playSound } from '../../utils/assets';
 import { useWideLayout } from '../../hooks/useWideLayout';
 import ShinyWaveBackground from '../../components/ShinyWaveBackground';
@@ -47,18 +47,29 @@ const formatTime = (sec) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
-export default function GummyGame({ config, onScoreChange, onLevelChange, onGameOver, onEscape }) {
+export default function GummyGame({ config, boardMode = 'cube', onScoreChange, onLevelChange, onGameOver, onEscape }) {
   // 横に余白のある画面（PCモニタ）では HUD を左右へ逃がし、盤面を縦いっぱいに使う
   const wide = useWideLayout();
   const gameConf = config?.game || {};
+
+  /* --- 盤面の作り ---
+     plane は立方体の3面ではなく正面1面だけを使う（3歳以上を対象に加えたため）。
+     ステージ進行と繰り返しの設定は config.game.plane に分けて持つ。
+     🔴 **立方体側の設定には触らない。** plane が無い・cube のときは
+     従来どおり config.game.* をそのまま読む。 */
+  const plane = boardMode === 'plane' ? (gameConf.plane || null) : null;
+  const faces = plane ? PLANE_FACES : undefined;
+  const conf = plane || gameConf;
+
   const progression = useMemo(() => {
-    const p = gameConf.stageProgression;
+    const p = conf.stageProgression;
     return Array.isArray(p) && p.length ? p : DEFAULT_STAGE_PROGRESSION;
-  }, [gameConf.stageProgression]);
+  }, [conf.stageProgression]);
+  // 制限時間と部分点率は平面でも共通（1プレイ120秒の枠は変えない）
   const timeLimit = gameConf.timeLimitSeconds ?? DEFAULT_TIME_LIMIT_SECONDS;
   const partialRate = gameConf.partialScoreRate ?? DEFAULT_PARTIAL_SCORE_RATE;
-  const repeatLast = gameConf.repeatLastStage !== false;
-  const maxStages = gameConf.maxStages ?? DEFAULT_MAX_STAGES;
+  const repeatLast = conf.repeatLastStage !== false;
+  const maxStages = conf.maxStages ?? DEFAULT_MAX_STAGES;
 
   const planAt = useCallback((i) => {
     // maxStages は「保険の上限」。0 以下なら上限なし＝**時間切れだけが終了条件**になる。
@@ -72,7 +83,7 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
   const [stageIndex, setStageIndex] = useState(0);
   const [game, setGame] = useState(() => {
     const plan = progression[0];
-    const stage = generateStage(plan.size, plan.difficulty);
+    const stage = generateStage(plan.size, plan.difficulty, faces);
     return { stage, path: [stage.start] };
   });
   const [clearedCount, setClearedCount] = useState(0);
@@ -213,7 +224,7 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
   const restart = useCallback(() => {
     if (finishedRef.current || advancingRef.current) return;
     const p = liveRef.current.plan;
-    const next = generateStage(p.size, p.difficulty);
+    const next = generateStage(p.size, p.difficulty, liveRef.current.faces);
     setGame({ stage: next, path: [next.start] });
     comboRef.current = 0;
     playSound('buttonClick', 0.5).catch(() => {});
@@ -240,14 +251,16 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
     const step = EAT_PITCH_STEPS[comboRef.current % EAT_PITCH_STEPS.length];
     comboRef.current += 1;
     const rate = Math.pow(2, step / 12);
-    playSound(crossedFace ? 'jump' : 'paltu', 0.9, rate).catch(() => {});
+    // 第4引数は「重ねて鳴らす」。連打すると前の音を巻き戻して消してしまい、
+    // 一本道の盤面では効果音が出ていないように聞こえた（2026-09-09 の指摘）
+    playSound(crossedFace ? 'jump' : 'paltu', 0.9, rate, true).catch(() => {});
   }, []);
 
   /* --- クリア → 次ステージ --- */
   // 依存は cleared のみに絞り、必要な値は ref から読む。
   // 依存配列が動いて cleanup が走ると advancingRef が立ったまま
   // タイマーだけ消えて進行不能になるため。
-  liveRef.current = { total, plan, stageIndex, planAt, baseScore, finish };
+  liveRef.current = { total, plan, stageIndex, planAt, baseScore, finish, faces };
 
   useEffect(() => {
     if (!cleared || finishedRef.current || advancingRef.current) return;
@@ -272,7 +285,7 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
         l.finish(l.baseScore + gained);
         return;
       }
-      const nextStage = generateStage(nextPlan.size, nextPlan.difficulty);
+      const nextStage = generateStage(nextPlan.size, nextPlan.difficulty, l.faces);
       comboRef.current = 0;
       setStageIndex(nextIndex);
       setGame({ stage: nextStage, path: [nextStage.start] });
@@ -397,6 +410,7 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
       onReject={reject}
       onLanded={handleLanded}
       shakeRef={shakeRef}
+      plane={!!plane}
       {...extra}
     />
   );
