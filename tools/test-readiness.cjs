@@ -21,7 +21,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const MODULE_PATH = path.join(ROOT, 'dist', 'main', 'main', 'services', 'readiness.js');
@@ -405,4 +405,128 @@ test('生成する start-comfyui.bat は Python のキャッシュもフォル�
   }
   // 当日はオフライン。外へ探しに行って待たされないように
   assert.ok(src.includes('HF_HUB_OFFLINE=1'), 'オフライン指定がありません');
+});
+// ================================================================
+// 当日運用スクリプトの取り決め（2026-09-09 の敵対的レビューで見つかった経路）
+//
+// いずれも「当日その場では直せないのに、表示は正常に見える」ものだった。
+// 実機で1回確かめただけでは戻ってしまうので、ここで固定する。
+// ================================================================
+
+test('起動バッチは ComfyUI をローカルで起こすかを baseUrl と root で決める（プロファイル名で決めない）', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
+  // 🔴 手順書の退避策は activeProfile を local_light にすること。
+  //    プロファイル名の一致で決めていると、その瞬間に ComfyUI を誰も起こさなくなる
+  assert.ok(
+    !/if \/i not "!PROFILE!"=="local"/.test(bat),
+    'プロファイル名の一致で「ローカルかどうか」を決めています（local_light で壊れます）'
+  );
+  assert.match(bat, /COMFY_IS_LOCAL/, 'baseUrl と root による判定がありません');
+  assert.match(bat, /\/\/127\.0\.0\.1:/, 'baseUrl がこのPCを指すかを見ていません');
+});
+
+test('起動バッチは待受しているだけで「起動しています」と言わない', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
+  // 8188 番は別プロジェクトの ComfyUI や無関係なプログラムでも LISTENING になる
+  assert.match(bat, /:comfy_answers/, '応答の確認（/system_stats）がありません');
+  assert.match(bat, /system_stats/, '/system_stats を見ていません');
+});
+
+test('起動バッチは ComfyUI を二重に起こさない（起動中の印を使う）', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
+  assert.match(bat, /comfy-starting\.flag/, '起動中の印がありません');
+  // 🔴 印が残ったまま当日詰まないよう、古い印は捨てること
+  assert.match(bat, /COMFY_FLAG_FRESH/, '古い印を捨てる仕組みがありません');
+});
+
+test('起動バッチはアプリの出力をログへ落とす（当日の調べ物の入口）', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
+  assert.match(bat, /logs\\app\.log/, 'アプリのログを取っていません');
+  // ログのために cmd で包むと窓が出る。隠していないと当日ずっと黒い窓が残る
+  const launchBlock = bat.slice(bat.indexOf('[6/7]'), bat.indexOf(':launch_done'));
+  assert.match(launchBlock, /LD_HIDE=1/, 'ログ用の cmd の窓を隠していません');
+});
+
+test('launch_detached はログを取るときもパス引数を渡す', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
+  const sub = bat.slice(bat.indexOf(':launch_detached'));
+  // 🔴 以前は $log のある枝で LD_PATHARG が組み立てから漏れており、
+  //    ログを取りながら Electron を起こすとアプリのフォルダ引数が落ちた
+  assert.match(sub, /\$pathArg/, 'パス引数を変数に取っていません');
+  const build = sub.slice(sub.indexOf('$inner='), sub.indexOf('$args=@{'));
+  assert.match(build, /if\(\$pathArg\)\{\$inner\+=/, 'パス引数がログ有りの経路で渡っていません');
+});
+
+test('停止バッチはフォルダ名ではなくフルパスで自分のプロセスを絞る', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'stop-kidspg.bat'), 'utf-8');
+  // 当日の置き場所は C:\kidspg\app なのでフォルダ名は "app"。
+  // '*app*' は無関係な Electron アプリにほぼ全部当たる（実測3件）
+  assert.ok(
+    !/CommandLine -like '\*%PROJ%\*'/.test(bat),
+    'フォルダ名で絞っています（当日は "app" になり無関係なアプリを落とします）'
+  );
+  assert.match(bat, /CommandLine -like '\*%APPDIR%\*'/, 'フルパスで絞っていません');
+});
+
+test('停止バッチは ComfyUI の監視ループも止める（5秒後に復活させない）', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'stop-kidspg.bat'), 'utf-8');
+  assert.match(bat, /start-comfyui/, '監視ループを止めていません');
+  // 確認側の条件も同じにする。片方だけだと「止め切ったのに残っていると出る」
+  const confirm = bat.slice(bat.indexOf('残っているものの確認'));
+  assert.match(confirm, /start-comfyui/, '確認側が監視ループを見ていません');
+});
+
+test('停止バッチは自分自身を巻き込まない', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'stop-kidspg.bat'), 'utf-8');
+  // 🔴 条件に 'start-comfyui' という文字列を入れると、その条件を実行している
+  //    powershell.exe のコマンド行にその文字列が載るので**自分が一致する**
+  //    （2026-09-09 に実測。確認側が「残っています : powershell.exe」を出した）
+  const count = (bat.match(/Win32_Process\*'/g) || []).length;
+  assert.ok(count >= 2, '停止側と確認側の両方で自己除外していません（' + count + ' 箇所）');
+});
+
+test('SAC のパス抽出は空白を含むパスでも切れない', () => {
+  // .ps1 から実際の正規表現を取り出し、実際のイベント本文で試す。
+  // 🔴 以前は (\S+) だったため \Device\HarddiskVolume3\Program で切れ、
+  //    Program Files や OneDrive 配下にある自分たちの資材が
+  //    「無関係なソフト」に分類されていた（前日の暖機はそこで行う）
+  const ps1 = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'check-sac-blocks.ps1'), 'utf-8');
+  const m = ps1.match(/-match '(attempted to load[^']+)'/);
+  assert.ok(m, '正規表現が見つかりません');
+  const message =
+    'Code Integrity determined that a process ' +
+    '(\\Device\\HarddiskVolume3\\Program Files\\Git\\usr\\bin\\bash.exe) attempted to load ' +
+    '\\Device\\HarddiskVolume3\\Users\\owner\\OneDrive - A B\\kidspg\\electron.exe ' +
+    'that did not meet the Enterprise signing level requirements.';
+  const out = execFileSync(
+    'powershell',
+    ['-NoProfile', '-Command',
+      '$m = $env:KIDSPG_MSG -match $env:KIDSPG_RE; if($m){ $Matches[1] } else { "NOMATCH" }'],
+    { encoding: 'utf8', env: { ...process.env, KIDSPG_MSG: message, KIDSPG_RE: m[1] } }
+  ).trim();
+  assert.strictEqual(
+    out,
+    '\\Device\\HarddiskVolume3\\Users\\owner\\OneDrive - A B\\kidspg\\electron.exe',
+    'パスが途中で切れています: ' + out
+  );
+});
+
+test('SAC の点検は 3118 を、近い時刻のパス付き記録があれば重複として数えない', () => {
+  const ps1 = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'check-sac-blocks.ps1'), 'utf-8');
+  // 実測（2026-09-09 / 30日分 57 件）では 3118 は**必ず**同じ瞬間の 3033/3077 と
+  // 対で出ており、3118 単独の時刻グループは 0 件だった。無条件に数えると
+  // 無関係なブロック1件で UNKNOWN が立ち、暖機の成功に原理的に到達しない
+  assert.match(ps1, /pathfulTimes/, '3118 の突き合わせがありません');
+  const block = ps1.slice(ps1.indexOf('$e.Id -eq 3118'));
+  assert.match(block, /TotalSeconds\) -le 2/, '近い時刻かどうかを見ていません');
+});
+
+test('暖機はブロックされたファイル名を表示する', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'warmup.bat'), 'utf-8');
+  // 以前は COUNT/OTHER/UNKNOWN の3行だけ拾い、一覧行を黙って捨てていた
+  assert.match(bat, /:sac_line/, '一覧行を振り分けるサブルーチンがありません');
+  assert.match(bat, /ブロックされたファイル/, '一覧の見出しがありません');
+  // サブルーチンは exit /b 0 の後ろに置く（前だと通り抜けて勝手に走る）
+  const exitIndex = bat.indexOf('exit /b 0\r\n\r\nrem');
+  assert.ok(bat.indexOf(':sac_line\r\n') > bat.lastIndexOf('pause'), ':sac_line が pause より前にあります');
 });

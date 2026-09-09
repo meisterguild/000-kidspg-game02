@@ -70,23 +70,41 @@ $oursHits = @{}
 $otherHits = @{}
 $unknown = 0
 
-foreach ($e in $events) {
-    $matched = $false
-    if ($e.Message -match 'attempted to load\s+(\S+)') {
+# 3118（SAC のブロック詳細）はパスを持たないので、単独では誰のものか分からない。
+# ただし実測では**必ず同じ瞬間の 3033/3077 と対で出る**ので、
+# 近い時刻にパス付きの記録があれば「すでに数えたものの重複」として捨てる。
+$pathfulTimes = New-Object System.Collections.ArrayList
+
+foreach ($e in ($events | Sort-Object TimeCreated)) {
+    # 🔴 パスは空白を含む（\Program Files\... / \Users\...\OneDrive - 会社名\...）。
+    #    以前は (\S+) で拾っていたため `\Device\HarddiskVolume3\Program` で切れ、
+    #    一覧が無意味な行になるうえ、**空白を含む場所にある自分たちの資材が
+    #    $Ours に当たらず OTHER＝「気にしなくてよい」に落ちていた**
+    #    （敵対的レビュー 2026-09-09 の指摘。前日の暖機は OneDrive 配下や
+    #    Program Files 配下で行うので、当日PC では出なくても実害がある）。
+    if ($e.Message -match 'attempted to load\s+(.+?)\s+that (?:did not|does not) meet') {
         $raw = $Matches[1]
         # \Device\HarddiskVolumeN\... の形なので、見て分かる形に縮める
         $short = $raw -replace '^\\Device\\HarddiskVolume\d+', ''
+        [void]$pathfulTimes.Add($e.TimeCreated)
         if ($short -match $Ours) {
             if (-not $oursHits.ContainsKey($short)) { $oursHits[$short] = $e.TimeCreated }
         } else {
             if (-not $otherHits.ContainsKey($short)) { $otherHits[$short] = $e.TimeCreated }
         }
-        $matched = $true
+        continue
     }
-    if (-not $matched -and $e.Id -eq 3118) {
-        # SAC のブロック詳細。パスが載らないので誰のものか分からない。
-        # 🔴 これを黙って捨てると「0 件＝暖機できた」と誤判定する
-        $unknown++
+    if ($e.Id -eq 3118) {
+        # 3118 のメッセージは "Smart App Control Block Deteails" だけでパスが無い。
+        # 前後 2 秒にパス付きの記録があれば、それの重複なので数えない。
+        # 🔴 ここを無条件に数えていたため、無関係なブロック（例: bash.exe が
+        #    pip.exe を読もうとした）が 1 件あるだけで UNKNOWN が立ち、
+        #    暖機の「★★★ 暖機できました ★★★」に**原理的に到達しなかった**。
+        $near = $false
+        foreach ($t in $pathfulTimes) {
+            if ([math]::Abs(($e.TimeCreated - $t).TotalSeconds) -le 2) { $near = $true; break }
+        }
+        if (-not $near) { $unknown++ }
     }
 }
 

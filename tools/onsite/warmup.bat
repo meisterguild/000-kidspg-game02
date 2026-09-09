@@ -125,11 +125,14 @@ rem UNKNOWN（ID 3118・誰のものか不明）を捨てると偽の成功に�
 rem （敵対的レビュー 2026-09-09 の指摘）。
 set "SACOTHER="
 set "SACUNKNOWN="
-for /f "usebackq tokens=1,* delims==" %%A in (`%PS% -File "!SACCHECK!" -Since "!T0!"`) do (
-  if /i "%%A"=="COUNT" set "SACCOUNT=%%B"
-  if /i "%%A"=="OTHER" set "SACOTHER=%%B"
-  if /i "%%A"=="UNKNOWN" set "SACUNKNOWN=%%B"
-)
+rem 🔴 **一覧の行を捨てないこと。** 以前は COUNT/OTHER/UNKNOWN の3行しか拾わず、
+rem    "21:01:19  \...\cython_special.cp312-win_amd64.pyd" のような一覧行が
+rem    どの if にも当たらず黙って消えていた。暖機が失敗したときに
+rem    **何が止められたのかが分からない**＝切り分けができない
+rem    （敵対的レビュー 2026-09-09 の指摘。冒頭の説明 4 とも食い違っていた）。
+rem    振り分けは :sac_line へ出す（"^) else if" の連鎖は使わない）。
+set "SACLISTED="
+for /f "usebackq tokens=1,* delims==" %%A in (`%PS% -File "!SACCHECK!" -Since "!T0!"`) do call :sac_line "%%A" "%%B"
 if defined SACOTHER echo        ＊ この企画と無関係なブロック: !SACOTHER! 件（気にしなくてよい）
 
 echo.
@@ -162,8 +165,10 @@ goto :sac_done
 
 :sac_notdone
 echo   ★ 暖機できていません（生成が通っていないため）
-echo     ブロックは !SACCOUNT! 件ですが、未署名ファイルを読ませられていないので
-echo     この 0 件に意味はありません。上の生成の失敗理由を直してください。
+echo     上に出ているブロックの数（!SACCOUNT! 件）は**判定に使えません**。
+echo     生成が通っていないと torch や scipy の未署名ファイルが一度も読まれず、
+echo     0 件でも「まだ試していない」という意味になるためです。
+echo     上の生成の失敗理由を直してから、もう一度実行してください。
 goto :sac_done
 
 :sac_partial
@@ -194,3 +199,24 @@ echo ============================================================
 echo.
 pause
 exit /b 0
+
+rem ------------------------------------------------------------
+rem  点検スクリプトの出力を1行ずつ振り分ける。
+rem
+rem  COUNT= / OTHER= / UNKNOWN= は数、それ以外はブロックされたファイルの一覧。
+rem  一覧は echo !K! で出す（%%K%% だと、パスに ^& や ^^ が入っていたときに
+rem  展開後の文字が**コマンドとして再解釈される**）。
+rem
+rem  🔴 このサブルーチンは exit /b 0 の後ろに置くこと。前に置くと
+rem     通常の流れが通り抜けて勝手に走る。
+rem ------------------------------------------------------------
+:sac_line
+set "K=%~1"
+set "V=%~2"
+if /i "!K!"=="COUNT" set "SACCOUNT=!V!" & goto :eof
+if /i "!K!"=="OTHER" set "SACOTHER=!V!" & goto :eof
+if /i "!K!"=="UNKNOWN" set "SACUNKNOWN=!V!" & goto :eof
+if "!K!"=="" goto :eof
+if not defined SACLISTED echo        ブロックされたファイル: & set "SACLISTED=1"
+echo          !K!
+goto :eof

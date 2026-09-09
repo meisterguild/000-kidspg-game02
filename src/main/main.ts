@@ -1234,6 +1234,22 @@ class ElectronApp {
     //    **開発機では通り、当日PC では必ず落ちる**という見え方になっていた。
     const resolution = resolveMagick([this.getBundleRoot()]);
     this.magickCommand = resolution.command;
+    // 🔴 **合成の一時ファイルもフォルダの中へ向ける。** 起動バッチも渡してくるが、
+    //    WMI 経由の起動では届かないことがあり、直接ダブルクリックされた場合は
+    //    そもそも誰も設定しない。既定のままだと %TEMP% に大きな中間画像が出て、
+    //    「1つのフォルダで完結」という当日の方針が崩れる（片付けはフォルダを
+    //    消すだけ、持ち帰りは丸ごとコピーだけ、を保つため）。
+    //    magick は子プロセスなので process.env をそのまま受け継ぐ。
+    if (!process.env.MAGICK_TEMPORARY_PATH) {
+      const tmpDir = path.join(this.getBundleRoot(), 'tmp');
+      try {
+        await fs.mkdir(tmpDir, { recursive: true });
+        process.env.MAGICK_TEMPORARY_PATH = tmpDir;
+        console.log('MAGICK_TEMPORARY_PATH: ' + tmpDir);
+      } catch (error) {
+        console.warn('tmp を作れないので既定の一時フォルダを使います:', error);
+      }
+    }
     try {
       const { spawn } = await import('child_process');
       await new Promise<void>((resolve, reject) => {

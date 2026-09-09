@@ -42,7 +42,21 @@ rem ============================================================
 set "KEEPCOMFY="
 if /i "%~1"=="/keepcomfy" set "KEEPCOMFY=1"
 
-rem このフォルダの名前を、開発用プロセスの見分けに使う
+rem 🔴 **フォルダ名では絞りが甘い。** 当日の置き場所は C:\kidspg\app なので
+rem    フォルダ名は "app" になり、'*app*' は**無関係な Electron アプリにほぼ全部
+rem    当たる**（ほとんどの Electron アプリは --app-path= を持つ）。実測では
+rem    この開発機で無関係な electron.exe が 3 件一致した。当たると
+rem      ・それらを taskkill /PID → 5 秒後に /F /T で落とす
+rem      ・最後の「残っているものの確認」も同じ条件なので、正しく止め切っても
+rem        「残っています」と出続ける（誤った失敗報告）
+rem    start-kidspg.bat は同じ欠陥をフルパス照合に直してあるのに、こちらだけ
+rem    直っていなかった（敵対的レビュー 2026-09-09 の指摘）。フルパスで照合する。
+for %%I in ("%~dp0.") do set "APPDIR=%%~fI"
+rem このバッチ（cmd.exe）自身の PID。照会から外すために使う
+set "SELFPID=0"
+for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "try{ (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId }catch{ 0 }"`) do set "SELFPID=%%A"
+if not defined SELFPID set "SELFPID=0"
+rem 表示用（人が読む見出しだけに使う）
 for %%I in ("%~dp0.") do set "PROJ=%%~nxI"
 
 echo ============================================================
@@ -57,15 +71,35 @@ echo.
 
 rem Electron 本体で起動した場合（Smart App Control が有効なPCではこちらが本番）と、
 rem 開発起動（npm run electron:dev）の Vite が対象。どちらもこのフォルダ名で見分ける。
-echo [2/4] Electron 起動ぶん / 開発用 Vite（%PROJ%）
-call :stop_group "($_.Name -eq 'electron.exe' -or $_.Name -eq 'node.exe') -and $_.CommandLine -like '*%PROJ%*'"
+echo [2/4] Electron 起動ぶん / 開発用 Vite（%APPDIR%）
+call :stop_group "($_.Name -eq 'electron.exe' -or $_.Name -eq 'node.exe') -and $_.CommandLine -like '*%APPDIR%*'"
 echo.
 
 echo [3/4] ComfyUI（AI画像変換）
 if defined KEEPCOMFY (
   echo        ＊ /keepcomfy が指定されたので触りません
 ) else (
+  rem 🔴 **監視ループを先に止める。** ComfyUI の起動経路は2つあり、
+  rem    start-comfyui.bat（当日手順書の検証1で「開いたままにする」と指示して
+  rem    いるもの／アプリの［ComfyUI を起動］ボタン）は
+  rem    **落ちたら 5 秒後に上げ直す cmd の監視ループ**を持っている。
+  rem    python だけ落とすと ping -n 6 のあとに ComfyUI が復活し、
+  rem    しかも「残っているものの確認」は復活前に走るので
+  rem    「なし（すべて終了しています）」と誤報していた
+  rem    （敵対的レビュー 2026-09-09 の指摘）。
+  echo        監視ループ（start-comfyui.bat）
+  call :stop_group "($_.Name -eq 'cmd.exe' -or $_.Name -eq 'powershell.exe') -and $_.CommandLine -like '*start-comfyui*'"
+  echo        ComfyUI 本体
   call :stop_group "$_.Name -eq 'python.exe' -and $_.CommandLine -like '*ComfyUI*' -and $_.CommandLine -like '*main.py*'"
+  rem 監視ループが ping で待っている隙に上げ直していないかを見る。
+  rem 5 秒待って、まだ居たらもう一度落とす
+  ping -n 7 127.0.0.1 > nul
+  call :stop_group "$_.Name -eq 'python.exe' -and $_.CommandLine -like '*ComfyUI*' -and $_.CommandLine -like '*main.py*'"
+)
+rem 起動中の印も片付ける（残ると start-kidspg.bat が ComfyUI を起こさなくなる）
+if exist "%~dp0logs\comfy-starting.flag" (
+  del /f /q "%~dp0logs\comfy-starting.flag" > nul 2>&1
+  echo        ComfyUI 起動中の印も片付けました
 )
 echo.
 
@@ -80,20 +114,28 @@ rem  このバッチは強制終了なので、アプリ側の終了処理（bef
 rem  走らない。残しておくと**止まっているのに準備完了に見える**フォルダになる。
 rem  起動バッチは起こす直前に必ず消すので実害は無いが、人が見て誤解する。
 rem ------------------------------------------------------------
-if exist "%~dp0logs\ready.json" (
-  del /f /q "%~dp0logs\ready.json" > nul 2>&1
-  echo        準備OKの印（logs\ready.json）を片付けました
-  echo.
+rem 印の置き場所は起動の仕方で変わる（start-kidspg.bat の READY_FILE と同じ）。
+rem electron 起動ならこのフォルダの logs\、exe 起動なら exe の隣の logs\。
+rem 片方しか消さないと、もう片方に古い印が残る
+rem （いま exe は作らない方針なので実害は無いが、条件を揃えておく）。
+for %%R in ("%~dp0logs\ready.json" "%~dp0release\win-unpacked\logs\ready.json") do (
+  if exist "%%~fR" (
+    del /f /q "%%~fR" > nul 2>&1
+    echo        準備OKの印を片付けました : %%~fR
+  )
 )
+echo.
 
 rem ------------------------------------------------------------
 echo ------------------------------------------------------------
 echo 残っているものの確認
 rem /keepcomfy のときは ComfyUI を「残っているもの」に数えない（意図して残しているため）
-set "PYCOND= -or ($_.Name -eq 'python.exe' -and $_.CommandLine -like '*ComfyUI*main.py*')"
+rem ⚠️ 条件は上の停止と**同じもの**にする。片方だけ直すと
+rem    「止め切ったのに残っていると出る」「残っているのに無しと出る」が起きる
+set "PYCOND= -or ($_.Name -eq 'python.exe' -and $_.CommandLine -like '*ComfyUI*main.py*') -or (($_.Name -eq 'cmd.exe' -or $_.Name -eq 'powershell.exe') -and $_.CommandLine -like '*start-comfyui*')"
 if defined KEEPCOMFY set "PYCOND="
 set "LEFT="
-for /f "usebackq tokens=*" %%L in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'KidsPG*' -or $_.ExecutablePath -like '*win-unpacked*'%PYCOND% -or $_.Name -eq 'magick.exe' -or (($_.Name -eq 'electron.exe' -or $_.Name -eq 'node.exe') -and $_.CommandLine -like '*%PROJ%*') } | ForEach-Object { $_.Name + '  PID=' + $_.ProcessId }"`) do (
+for /f "usebackq tokens=*" %%L in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { ($_.Name -like 'KidsPG*' -or $_.ExecutablePath -like '*win-unpacked*'%PYCOND% -or $_.Name -eq 'magick.exe' -or (($_.Name -eq 'electron.exe' -or $_.Name -eq 'node.exe') -and $_.CommandLine -like '*%APPDIR%*')) -and $_.CommandLine -notlike '*Win32_Process*' -and $_.ProcessId -ne %SELFPID% } | ForEach-Object { $_.Name + '  PID=' + $_.ProcessId }"`) do (
   set "LEFT=1"
   echo        残っています : %%L
 )
@@ -118,7 +160,13 @@ rem ------------------------------------------------------------
 :stop_group
 set "FILTER=%~1"
 set "PIDS="
-for /f "usebackq tokens=*" %%P in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { %FILTER% } | ForEach-Object { $_.ProcessId }"`) do set "PIDS=!PIDS! %%P"
+rem 🔴 **自分自身を巻き込まない。** 条件に 'start-comfyui' のような文字列を書くと、
+rem    その条件を実行している powershell.exe のコマンド行にその文字列が載るので
+rem    **自分が一致する**（2026-09-09 に実測。確認側が「残っています :
+rem    powershell.exe」を永久に出し、停止側は自分を taskkill しかけた）。
+rem    照会プロセスは必ず Win32_Process を含むので、それで外す。
+rem    自分の PID とその親も念のため外す。
+for /f "usebackq tokens=*" %%P in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { (%FILTER%) -and $_.CommandLine -notlike '*Win32_Process*' -and $_.ProcessId -ne %SELFPID% } | ForEach-Object { $_.ProcessId }"`) do set "PIDS=!PIDS! %%P"
 if not defined PIDS (
   echo        なし
   exit /b 0

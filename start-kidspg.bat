@@ -117,17 +117,38 @@ rem ------------------------------------------------------------
 echo [2/7] ImageMagick の確認（記念カードの合成に必要）
 rem 配布版は ImageMagick を**インストールせず**、隣の bin\ImageMagick に携帯版を置く。
 rem PATH を恒久的に書き換えず、この起動のあいだだけ先頭に足す。
-rem 子プロセス（Electron → magick）はこの PATH を受け継ぐので、
-rem アプリからの合成もこれで通る。開発機のようにインストール済みなら何も変わらない。
+rem
+rem 🔴 **この PATH はアプリには届かない。** アプリは :launch_detached
+rem （Win32_Process.Create / WMI）で起こしており、この呼び方は**呼び出し元の
+rem 環境変数を一切受け継がない**（ComfyUI の OMP_NUM_THREADS で実測済み）。
+rem 以前はここのコメントが「子プロセスはこの PATH を受け継ぐ」と書いていたが、
+rem それは cmd から直に起こしたときの話で、当日の経路では成り立っていない。
+rem 記念カードが1枚も作られない状態で「★★★ 準備完了 ★★★」と出る
+rem いちばん危ない壊れ方だった（敵対的レビュー 2026-09-09 の指摘）。
+rem 対策は2つ入れてある:
+rem   1. アプリを起こすときも APP_ENV でコマンド行に載せる（下の [6/7]）
+rem   2. アプリ自身が <app>\..\bin\ImageMagick\magick.exe を絶対パスで探す
+rem      （src/main/services/magick-path.ts）——こちらが本命の保険
+set "MAGICK_DIR="
 if exist "%~dp0..\bin\ImageMagick\magick.exe" (
+  set "MAGICK_DIR=%~dp0..\bin\ImageMagick"
   set "PATH=%~dp0..\bin\ImageMagick;!PATH!"
   echo        携帯版を使います : %~dp0..\bin\ImageMagick
 )
 rem ImageMagick が大きな画像で使う一時ファイルも、このフォルダの中に置く。
 rem 当日PCは「1つのフォルダで完結」させる方針なので、%TEMP% に散らさない
 rem （片付けはフォルダを消すだけ、持ち帰りは丸ごとコピーだけ、を保つ）。
-if not exist "%~dp0tmp" mkdir "%~dp0tmp"
-set "MAGICK_TEMPORARY_PATH=%~dp0tmp"
+if not exist "%~dp0tmp" mkdir "%~dp0tmp" 2>nul
+if not exist "%~dp0tmp" (
+  rem 作れないまま MAGICK_TEMPORARY_PATH へ向けると、大きな画像の合成だけが
+  rem あとから落ちる（[2/7] は magick を OK と出したまま）。先に言う
+  echo        [警告] tmp\ を作れません : %~dp0tmp
+  echo               大きな画像の合成に失敗することがあります。
+  echo               ディスクの空き容量と書き込み権限を確認してください。
+  set /a WARN+=1
+) else (
+  set "MAGICK_TEMPORARY_PATH=%~dp0tmp"
+)
 where magick > nul 2>&1
 if errorlevel 1 (
   echo        [警告] magick が見つかりません。記念カードが1枚も作られません。
@@ -295,15 +316,63 @@ if not defined COMFY_PY if exist "!COMFY_DIR!\venv\Scripts\python.exe" set "COMF
 if not defined COMFY_PY set "COMFY_PY=!COMFY_DIR!\venv\Scripts\python.exe"
 echo        使用プロファイル : !PROFILE!  ^(!BASEURL!^)
 
+rem 🔴 **「ローカルで起こすべきか」をプロファイル名で決めてはいけない。**
+rem    以前は !PROFILE! が "local" かどうかだけを見ていた。ところが
+rem    当日手順書の退避策は「生成が間に合わない → activeProfile を
+rem    local_light にしてアプリを再起動」で、local_light も
+rem    baseUrl=127.0.0.1・paths.root ありの**ローカルで起こす必要がある**
+rem    プロファイル。この退避を採った瞬間に ComfyUI を誰も起こさなくなり、
+rem    しかも表示は「AIサーバー側の ComfyUI が動いているか確認してください」
+rem    という無関係な誘導になっていた（敵対的レビュー 2026-09-09 の指摘）。
+rem    activeProfile の綴り間違いや JSON 読み取り失敗（fumei）でも同じ枝に落ちる。
+rem    見るのは**事実**——baseUrl がこのPCを指していて、root が分かっているか。
+set "COMFY_IS_LOCAL="
+echo !BASEURL! | findstr /i /c:"//127.0.0.1:" /c:"//localhost:" /c:"//[::1]:" > nul 2>&1
+if not errorlevel 1 if defined CFG_ROOT set "COMFY_IS_LOCAL=1"
+
 call :is_port_open
 if "!PORT_OPEN!"=="1" (
-  echo        OK : %COMFY_PORT% 番は待受中です（すでに起動しています）
+  rem ⚠️ **待受しているだけでは「起動している」と言えない。** 前日の別プロジェクトの
+  rem    ComfyUI、モデルが載っていない ComfyUI、8188 を掴んだ別プログラムでも
+  rem    LISTENING にはなる。以前はここで OK と出して以後の経路を全部飛ばしていた
+  rem    （敵対的レビュー 2026-09-09 の指摘）。中身を1回だけ聞いてみる。
+  call :comfy_answers
+  if "!COMFY_OK!"=="1" (
+    echo        OK : %COMFY_PORT% 番は待受中で、応答もあります（すでに起動しています）
+  ) else (
+    echo        [注意] %COMFY_PORT% 番は誰かが使っていますが、ComfyUI の応答がありません。
+    echo               モデル読み込み中か、別のプログラムが %COMFY_PORT% 番を
+    echo               掴んでいます。カードの絵がプレースホルダになる場合は
+    echo               logs\comfyui.log とタスクマネージャーを確認してください。
+    set /a WARN+=1
+  )
   goto :comfy_done
 )
 
-if /i not "!PROFILE!"=="local" (
+rem 別の実行が ComfyUI を起こして待っている最中なら、2つ目を起こさない。
+rem 🔴 **ただし古い印で当日詰まないこと。** 異常終了（電源断・タスクマネージャ）で
+rem    印が残ると、それだけで ComfyUI が永久に起こせなくなる——当日いちばん
+rem    やってはいけない壊れ方。待ち時間（%COMFY_WAIT% 秒）＋余裕 60 秒より
+rem    古い印は「前回の残骸」と見て捨てる。
+set "COMFY_FLAG_FRESH=0"
+if exist "%~dp0logs\comfy-starting.flag" (
+  for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "try{ $f=Get-Item -LiteralPath '%~dp0logs\comfy-starting.flag' -ErrorAction Stop; if(((Get-Date)-$f.LastWriteTime).TotalSeconds -lt (%COMFY_WAIT% + 60)){'1'}else{'0'} }catch{ '0' }"`) do set "COMFY_FLAG_FRESH=%%A"
+)
+if "!COMFY_FLAG_FRESH!"=="1" (
+  echo        [注意] 別の実行が ComfyUI を起動中です。2つ目は起こしません。
+  echo               そちらの黒い画面が「準備完了」まで進むのを待ってください。
+  set /a WARN+=1
+  goto :comfy_done
+)
+if exist "%~dp0logs\comfy-starting.flag" (
+  echo        ＊ 前回の起動中の印が残っていたので捨てます
+  del "%~dp0logs\comfy-starting.flag" > nul 2>&1
+)
+
+if not defined COMFY_IS_LOCAL (
   echo        [警告] このPCの %COMFY_PORT% 番は待受していません。
-  echo               AIサーバー側の ComfyUI が動いているか確認してください。
+  echo               このプロファイル（!PROFILE! / !BASEURL!）は別の機体の
+  echo               ComfyUI を指しているので、こちらでは起こせません。
   echo               つながらない場合、カードは「本人の写真」で作られます。
   set /a WARN+=1
   goto :comfy_done
@@ -326,7 +395,20 @@ if defined DRYRUN (
 
 rem ComfyUI は画面を出さずに常駐させる（DOS窓を残さない）。
 rem 代わりに出力はログへ落として、後から見られるようにする。
-if not exist "%~dp0logs" mkdir "%~dp0logs"
+rem 🔴 **logs に書けることを確かめる。** 書けない／満杯だと cmd.exe は即座に
+rem    落ちるが Win32_Process.Create は 0 を返す（cmd の起動自体は成功する）ため、
+rem    「ComfyUI を起動します」と表示したうえで 300 秒待ち、最後に
+rem    **存在しないログを見ろ**と言っていた（敵対的レビュー 2026-09-09 の指摘）。
+if not exist "%~dp0logs" mkdir "%~dp0logs" 2>nul
+> "%~dp0logs\.write-probe" echo ok 2>nul
+if not exist "%~dp0logs\.write-probe" (
+  echo        [警告] logs\ に書き込めません : %~dp0logs
+  echo               ディスクの空き容量と書き込み権限を確認してください。
+  echo               ComfyUI のログが残らないので、失敗しても原因が追えません。
+  set /a WARN+=1
+) else (
+  del "%~dp0logs\.write-probe" > nul 2>&1
+)
 echo        ComfyUI を起動します（CPU実行・画面は出ません）
 echo        ログ : %~dp0logs\comfyui.log
 rem ComfyUI へ渡す環境変数。**ここが唯一効く場所**（上の LD_ENV の説明）。
@@ -351,16 +433,25 @@ if not "!LD_RC!"=="0" (
   set /a WARN+=1
   goto :comfy_done
 )
+rem 🔴 **起動中であることを記録する。** ComfyUI は待受を始めるまで数分かかる
+rem    （COMFY_WAIT=%COMFY_WAIT% 秒という設定自体がそれを認めている）。その間に
+rem    もう一度このバッチを叩くと、2本目は「まだ待受していない」と判断して
+rem    **2つ目の python main.py を起こす**。torch を二重に読み込んで CPU と
+rem    メモリを食い尽くし、後から bind した方は即死、ログも混ざる
+rem    （敵対的レビュー 2026-09-09 の指摘）。印を置いて、次の人に伝える。
+> "%~dp0logs\comfy-starting.flag" echo %DATE% %TIME% pid=%RANDOM% 2>nul
 set /a WAITED=0
 :wait_comfy
 call :is_port_open
 if "!PORT_OPEN!"=="1" (
   echo.
   echo        OK : ComfyUI が待受を始めました（%COMFY_PORT% 番）
+  del "%~dp0logs\comfy-starting.flag" > nul 2>&1
   goto :comfy_done
 )
 if !WAITED! GEQ %COMFY_WAIT% (
   echo.
+  del "%~dp0logs\comfy-starting.flag" > nul 2>&1
   echo        [警告] %COMFY_WAIT% 秒待ちましたが応答がありません。
   echo               logs\comfyui.log にエラーが出ていないか見てください。
   set /a WARN+=1
@@ -466,15 +557,45 @@ if defined ALREADY_LIVE (
   goto :launch_done
 )
 rem （古い印は :clear_ready で消してある）
+rem アプリへ渡す環境変数。**ここが唯一効く場所**（:launch_detached の説明）。
+rem  ・KIDSPG_MAGICK … 携帯版 magick の絶対パス。アプリはこれを最優先で使う
+rem    （src/main/services/magick-path.ts）。PATH を組み替えないのは、
+rem    コマンド行に巨大な PATH を載せると引用符と ^& で壊れやすいため
+rem  ・MAGICK_TEMPORARY_PATH … 合成の一時ファイルをこのフォルダの中へ。
+rem    渡さないと %TEMP% に出る（当日PCは1フォルダで完結させる方針に反する）
+rem  ・KIDSPG_APP_LOG … 出したログの場所。当日の調べ物の入口を1つに絞る
+set "APP_ENV="
+if defined MAGICK_DIR set "APP_ENV=set KIDSPG_MAGICK=!MAGICK_DIR!\magick.exe"
+if defined MAGICK_TEMPORARY_PATH (
+  if defined APP_ENV (
+    set "APP_ENV=!APP_ENV!&& set MAGICK_TEMPORARY_PATH=!MAGICK_TEMPORARY_PATH!"
+  ) else (
+    set "APP_ENV=set MAGICK_TEMPORARY_PATH=!MAGICK_TEMPORARY_PATH!"
+  )
+)
 (
   if "!LAUNCH_MODE!"=="electron" (
     set "LD_EXE=!ELECTRON_EXE!"
     set "LD_RAWARGS="
     set "LD_PATHARG=%~dp0."
     set "LD_CWD=%~dp0"
+    rem 🔴 **アプリの標準出力を残す。** 以前はログを取っていなかったため、
+    rem    「当日はこのログで状況を追う」と書いてあるのに console.log /
+    rem    console.error が1行も読めなかった（アセットが見つからない、
+    rem    results.json の更新失敗、ComfyUI の CRITICAL など全部捨てられていた。
+    rem    敵対的レビュー 2026-09-09 の指摘）。
+    set "LD_LOG=%~dp0logs\app.log"
+    set "LD_ENV=!APP_ENV!"
+    rem ログを取るため cmd.exe /c で包む。その cmd のコンソールは隠す——
+    rem 表示すると当日ずっと黒い窓が残り、スタッフが閉じるとアプリも落ちる
+    set "LD_HIDE=1"
     call :launch_detached
+    set "LD_HIDE="
+    set "LD_LOG="
+    set "LD_ENV="
     if "!LD_RC!"=="0" (
       echo        起動しました : Electron ^+ %~dp0
+      echo        アプリのログ : %~dp0logs\app.log
     ) else (
       echo        [警告] 切り離しての起動に失敗しました。従来の方法で起動します。
       echo               この場合、**この黒い画面を閉じるとアプリも終了します**。
@@ -486,9 +607,16 @@ rem （古い印は :clear_ready で消してある）
     set "LD_RAWARGS="
     set "LD_PATHARG="
     set "LD_CWD=%~dp0"
+    set "LD_LOG=%~dp0logs\app.log"
+    set "LD_ENV=!APP_ENV!"
+    set "LD_HIDE=1"
     call :launch_detached
+    set "LD_HIDE="
+    set "LD_LOG="
+    set "LD_ENV="
     if "!LD_RC!"=="0" (
       echo        起動しました : !APP_NAME!
+      echo        アプリのログ : %~dp0logs\app.log
     ) else (
       echo        [警告] 切り離しての起動に失敗しました。従来の方法で起動します。
       echo               この場合、**この黒い画面を閉じるとアプリも終了します**。
@@ -645,7 +773,12 @@ rem Win32_Process.Create は**呼び出し元の環境を受け継がない**の
 rem バッチ側で set しただけでは子に届かない。コマンド行に載せる必要がある
 rem （敵対的レビュー 2026-09-09 の指摘。ComfyUI の OMP_NUM_THREADS と
 rem  キャッシュの向き先が、どちらも効いていなかった）。
-for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "$q=[char]34; $exe='!LD_EXE!'; $raw='!LD_RAWARGS!'; $log='!LD_LOG!'; $pre='!LD_ENV!'; if($log){ $inner=$q+$exe+$q; if($raw){$inner+=' '+$raw}; $inner+=' >> '+$q+$log+$q+' 2>&1'; if($pre){$inner=$pre+' && '+$inner}; $cl='cmd.exe /c '+$q+$inner+$q } else { $cl=$q+$exe+$q; if($raw){$cl+=' '+$raw}; if('!LD_PATHARG!'){ $cl+=' '+$q+'!LD_PATHARG!'+$q } }; $args=@{CommandLine=$cl; CurrentDirectory='!LD_CWD!'}; if('!LD_HIDE!'){ $args['ProcessStartupInformation']=[CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}) }; try{ (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $args -ErrorAction Stop).ReturnValue }catch{ 9 }"`) do set "LD_RC=%%A"
+rem 🔴 **LD_PATHARG は LD_LOG のある枝でも渡すこと。** 以前は $log の枝で
+rem    組み立てから漏れており、ログを取りながら Electron を起こすと
+rem    アプリのフォルダ引数が落ちて別のものが立ち上がる形だった。
+rem    LD_ENV も $log が無いと載らなかったので、どちらか一方でも
+rem    指定されていれば cmd.exe /c で包むようにまとめた。
+for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "$q=[char]34; $exe='!LD_EXE!'; $raw='!LD_RAWARGS!'; $pathArg='!LD_PATHARG!'; $log='!LD_LOG!'; $pre='!LD_ENV!'; $inner=$q+$exe+$q; if($raw){$inner+=' '+$raw}; if($pathArg){$inner+=' '+$q+$pathArg+$q}; if($log){$inner+=' >> '+$q+$log+$q+' 2>&1'}; if($pre -or $log){ if($pre){$inner=$pre+' && '+$inner}; $cl='cmd.exe /c '+$q+$inner+$q } else { $cl=$inner }; $args=@{CommandLine=$cl; CurrentDirectory='!LD_CWD!'}; if('!LD_HIDE!'){ $args['ProcessStartupInformation']=[CimInstance](New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}) }; try{ (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $args -ErrorAction Stop).ReturnValue }catch{ 9 }"`) do set "LD_RC=%%A"
 exit /b 0
 
 rem ------------------------------------------------------------
@@ -658,6 +791,14 @@ rem
 rem  ただし**起動直後はまだウィンドウが無い**（Electron の初期化に数秒かかる）。
 rem  立ち上がりかけを巻き込んで殺さないよう、若いプロセスは生きている側に数える。
 rem
+rem  🔴 **猶予は 90 秒。** 以前は 20 秒だった。冷えたディスクと Smart App Control の
+rem  判定待ちが重なると初回のウィンドウ表示は 20 秒を超えうる（SAC 対策が
+rem  必要な機体では、まさにそれが起きる）。そこを短くしていたため、
+rem  二重起動やウォームアップ中に叩いたときに**1本目が起こしたばかりの
+rem  Electron をゾンビ扱いして /F /T で殺す**恐れがあった
+rem  （敵対的レビュー 2026-09-09 の指摘）。準備確認の待ち（READY_WAIT=90 秒）と
+rem  同じ長さにしておけば、待っている最中のものを殺すことはない。
+rem
 rem  入力: INST_FILTER（PowerShell の Where-Object 条件式）
 rem  出力: LIVE_COUNT / ZOMBIE_COUNT / ZOMBIE_PIDS（先頭に空白つきのPID列）
 rem ------------------------------------------------------------
@@ -665,7 +806,7 @@ rem ------------------------------------------------------------
 set "LIVE_COUNT=0"
 set "ZOMBIE_COUNT=0"
 set "ZOMBIE_PIDS="
-for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "$live=0; $z=@(); foreach($p in @(Get-CimInstance Win32_Process | Where-Object { !INST_FILTER! })){ $h=0; try{ $h=(Get-Process -Id $p.ProcessId -ErrorAction Stop).MainWindowHandle }catch{ $h=0 }; $age=((Get-Date) - $p.CreationDate).TotalSeconds; if($h -ne 0 -or $age -lt 20){ $live++ } else { $z += $p.ProcessId } }; 'LIVE=' + $live; 'ZCOUNT=' + $z.Count; if($z.Count){ 'ZPIDS=' + ($z -join ' ') }"`) do (
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "$live=0; $z=@(); foreach($p in @(Get-CimInstance Win32_Process | Where-Object { !INST_FILTER! })){ $h=0; try{ $h=(Get-Process -Id $p.ProcessId -ErrorAction Stop).MainWindowHandle }catch{ $h=0 }; $age=((Get-Date) - $p.CreationDate).TotalSeconds; if($h -ne 0 -or $age -lt 90){ $live++ } else { $z += $p.ProcessId } }; 'LIVE=' + $live; 'ZCOUNT=' + $z.Count; if($z.Count){ 'ZPIDS=' + ($z -join ' ') }"`) do (
   if /i "%%A"=="LIVE" set "LIVE_COUNT=%%B"
   if /i "%%A"=="ZCOUNT" set "ZOMBIE_COUNT=%%B"
   if /i "%%A"=="ZPIDS" if not "%%B"=="" set "ZOMBIE_PIDS= %%B"
@@ -742,6 +883,24 @@ exit /b 0
 rem ------------------------------------------------------------
 rem  127.0.0.1 の %COMFY_PORT% 番が待受しているかを PORT_OPEN に入れる
 rem ------------------------------------------------------------
+rem ------------------------------------------------------------
+rem  ComfyUI が**本当に ComfyUI として応答するか**を見る。
+rem
+rem  ポートが LISTENING なだけでは足りない。前日の別プロジェクトの ComfyUI、
+rem  モデルが載っていない ComfyUI、8188 番を掴んだ別のプログラムでも
+rem  LISTENING になる（敵対的レビュー 2026-09-09 の指摘）。
+rem
+rem  ⚠️ モデル読み込み中は待受していても /system_stats が返らない。
+rem     だから**これが 0 でも失敗とは断じない**（注意にとどめる）。
+rem     アプリ側は app-ready で最大40秒待ってから判定する。
+rem
+rem  出力: COMFY_OK（1 なら ComfyUI として応答した）
+rem ------------------------------------------------------------
+:comfy_answers
+set "COMFY_OK=0"
+for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "try{ $r=Invoke-RestMethod -Uri 'http://127.0.0.1:%COMFY_PORT%/system_stats' -TimeoutSec 5 -ErrorAction Stop; if($r.system){'1'}else{'0'} }catch{ '0' }"`) do set "COMFY_OK=%%A"
+exit /b 0
+
 :is_port_open
 set "PORT_OPEN=0"
 netstat -ano -p tcp | findstr /r /c:"127.0.0.1:%COMFY_PORT% .*LISTENING" > nul 2>&1
