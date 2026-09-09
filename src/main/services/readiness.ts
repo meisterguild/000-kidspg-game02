@@ -56,10 +56,26 @@ export interface ReadinessReport extends RendererReadiness {
     writable: boolean;
   };
   /**
-   * 当日スタッフに伝えるべきこと。**空なら文字どおり準備完了**。
-   * 起動バッチはこの中身をそのまま画面へ出す。
+   * 🔴 **これがあると遊べない。** 起動バッチは「準備できていません」と出す。
+   * 例: results に書けない（カードが1枚も残らない）・画面の素材が読めていない
    */
-  warnings: string[];
+  blockers: string[];
+  /**
+   * ⚠️ **遊べるが当日困ること。** 起動バッチは
+   * 「準備完了（ただし気になる点が N 件）」と出す。
+   * 例: カメラが無い（全員ダミー写真）・ComfyUI が落ちている（絵が全員同じ）
+   *
+   * ■ なぜ分けるのか（敵対的レビュー 2026-09-09 の指摘）
+   * 以前は両方を warnings ひとつにまとめ、**1件でもあれば「準備できていません」**に
+   * していた。そのため
+   *   ・カメラを挿し忘れただけ／ComfyUI が落ちただけ、という**遊べる状態**で
+   *     開場を止めることになる（しかも当日手順書はその2つを
+   *     「遊べるが困る」例として挙げていた＝文書と実装が逆）
+   *   ・退避策（config.json の comfyui を外して AI 変換を切る）を採った瞬間に
+   *     「準備できていません」と出て、**意図した構成が異常扱い**になる
+   * という二重の逆転が起きていた。
+   */
+  notes: string[];
 }
 
 export const readinessFilePath = (baseDir: string): string =>
@@ -98,53 +114,64 @@ export const checkResultsWritable = async (resultsDir: string): Promise<boolean>
 };
 
 /**
- * 集めた事実から、当日スタッフに伝えるべきことを組み立てる。
+ * 集めた事実を「遊べないこと（blockers）」と「遊べるが困ること（notes）」に分ける。
  *
- * **「動くけれど当日困ること」を漏らさないのがここの役目。**
- * 起動できたかどうかだけを見ると、カメラが無い（全員ダミー写真）や
+ * ■ ここの分け方が当日の運用判断そのもの
+ * 当日手順書は「★★★ 準備完了 ★★★ が出たら受付を開けてよい」と約束している。
+ * だから **blockers に入れるのは「本当に遊べないもの」だけ**にする。
+ * 遊べるのに開場を止めると、回復手段が無いまま列が止まる。
+ * 逆に「動くけれど当日困ること」を黙って通すと、カメラが無い（全員ダミー写真）や
  * ComfyUI が落ちている（全員同じ絵）に気づかないまま開場してしまう。
+ * だから notes として**必ず見せる**が、開場は止めない。
  */
-export const buildReadinessWarnings = (
-  report: Omit<ReadinessReport, 'warnings'>
-): string[] => {
-  const warnings: string[] = [];
+export const classifyReadiness = (
+  report: Omit<ReadinessReport, 'blockers' | 'notes'>
+): { blockers: string[]; notes: string[] } => {
+  const blockers: string[] = [];
+  const notes: string[] = [];
+
+  // --- 遊べないもの ---
   if (!report.results.writable) {
-    warnings.push(
+    // カードも results.json も残らない。遊ばせても何も持ち帰れない
+    blockers.push(
       'results に書き込めません（' + report.results.dir + '）。カードが1枚も残りません'
     );
   }
-  if (report.usingDummyCamera) {
-    warnings.push(
-      'カメラが見つかりません。全員ダミー写真になり、AI変換も走りません' +
-        '（Windows の設定 > プライバシー > カメラ を確認）'
-    );
-  }
-  if (!report.cameraReady) {
-    // 対処を書かないと当日詰まる。起動バッチの時間切れ側には書いてあるのに
-    // 印が書けたときのほうが情報が少ない、という逆転が起きていた
-    // （敵対的レビュー 2026-09-09 の指摘）
-    warnings.push(
-      'カメラの初期化が終わっていません。カメラを抜き差しし、' +
-        'Windows の設定 > プライバシー > カメラ を確認してからアプリを再起動してください'
-    );
-  }
   if (!report.assetsLoaded) {
-    warnings.push(
+    // 画面の背景やカードの素材が欠けている＝コピーが不完全
+    blockers.push(
       '背景アセットを読み込めていません（画面の背景やカードの素材が欠けている可能性）。' +
         'コピーが不完全かもしれません'
     );
   }
+  if (!report.cameraReady) {
+    // 「カメラが無い」とは違う。**初期化が決着していない**＝撮影画面で止まりうる
+    blockers.push(
+      'カメラの初期化が終わっていません。カメラを抜き差しし、' +
+        'Windows の設定 > プライバシー > カメラ を確認してからアプリを再起動してください'
+    );
+  }
+
+  // --- 遊べるが当日困るもの ---
+  if (report.usingDummyCamera) {
+    notes.push(
+      'カメラが見つかりません。全員ダミー写真になり、AI変換も走りません' +
+        '（Windows の設定 > プライバシー > カメラ を確認）'
+    );
+  }
   if (report.comfyui && !report.comfyui.healthy) {
-    warnings.push(
+    notes.push(
       'ComfyUI に繋がりません（' +
         report.comfyui.baseUrl +
         '）。カードの絵が全員同じプレースホルダになります'
     );
   }
   if (!report.comfyui) {
-    warnings.push('ComfyUI の設定がありません。AI変換なしで動きます');
+    // 🔴 これは**意図してそうする退避策**（README の「AI変換を当日オフにする」）。
+    // 異常として扱うと、最後の逃げ道を採った瞬間に「準備できていません」と出る
+    notes.push('ComfyUI の設定がありません。AI変換なしで動きます（意図した構成なら問題ありません）');
   }
-  return warnings;
+  return { blockers, notes };
 };
 
 /**

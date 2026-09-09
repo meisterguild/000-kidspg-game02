@@ -158,8 +158,14 @@ const electronAPI = {
     cameraReady: boolean;
     usingDummyCamera: boolean;
     screen: string;
-  }): Promise<{ success: boolean; warnings?: string[]; error?: string }> =>
-    ipcRenderer.invoke('app-ready', info),
+  }): Promise<{
+    success: boolean;
+    /** これがあると遊べない */
+    blockers?: string[];
+    /** 遊べるが当日困ること */
+    notes?: string[];
+    error?: string;
+  }> => ipcRenderer.invoke('app-ready', info),
   /**
    * main から「準備状況をもう一度報告して」と言われたときに呼ばれる。
    * 起動バッチが2本目を起こしたときに飛んでくる（詳細は main の second-instance）。

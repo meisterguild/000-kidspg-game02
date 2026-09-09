@@ -26,7 +26,7 @@ import {
 import { resolveComfyUIConfig, type ResolvedComfyUIConfig } from './services/comfyui-config';
 import { launchComfyUI } from './services/comfyui-launcher';
 import {
-  buildReadinessWarnings,
+  classifyReadiness,
   checkResultsWritable,
   clearReadiness,
   writeReadiness,
@@ -208,6 +208,23 @@ class ElectronApp {
    * 保存直後にその場で伝えるために使う。起動時ダイアログはもう過ぎているため、
    * ここで返さないと `denoise: 1` のような致命的な設定が黙って通る。
    */
+  /**
+   * ComfyUI の疎通を、少し待ちながら確かめる。
+   *
+   * 待つ理由は app-ready のコメント。**待ちすぎない**のも大事で、
+   * ここで長く待つと起動バッチの「準備確認」が伸び、当日の待ち時間になる。
+   * ComfyUI が本当に落ちている場合も、この時間で確定させる。
+   */
+  private async waitForComfyUIHealthy(): Promise<boolean> {
+    if (!this.comfyUIService) return false;
+    const deadline = Date.now() + 40_000;
+    for (;;) {
+      if (await this.comfyUIService.healthCheck()) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
+  }
+
   private async collectGenerationWarnings(): Promise<string[]> {
     const comfy = this.comfyUI;
     if (!comfy) return [];
@@ -760,7 +777,7 @@ class ElectronApp {
       try {
         const renderer = info as RendererReadiness;
         const resultsDir = resolveResultsDir();
-        const base: Omit<ReadinessReport, 'warnings'> = {
+        const base: Omit<ReadinessReport, 'blockers' | 'notes'> = {
           assetsLoaded: !!renderer?.assetsLoaded,
           cameraReady: !!renderer?.cameraReady,
           usingDummyCamera: !!renderer?.usingDummyCamera,
@@ -774,20 +791,28 @@ class ElectronApp {
                 profile: this.comfyUI.profileName,
                 baseUrl: this.comfyUI.baseUrl,
                 // 疎通は起動時にも見ているが、ここでもう一度見る。
-                // 起動の途中で ComfyUI が落ちた場合に気づけるようにするため
-                healthy: this.comfyUIService ? await this.comfyUIService.healthCheck() : false,
+                // 起動の途中で ComfyUI が落ちた場合に気づけるようにするため。
+                //
+                // ⚠️ **1回だけ聞くと、冷えた状態からの起動でほぼ必ず「繋がらない」に
+                // なる。** アプリは十数秒で画面を出すが、ComfyUI は待受を始めてから
+                // モデルの読み込みで1〜2分かかり、そのあいだ /system_stats は
+                // 返ってこない（2026-09-09 に実機で確認: ログに Starting server が
+                // 出ているのに判定は「繋がりません」だった）。
+                // 毎回出る注意は読み飛ばされるようになるので、少し待って聞き直す。
+                healthy: await this.waitForComfyUIHealthy(),
               }
             : null,
           results: { dir: resultsDir, writable: await checkResultsWritable(resultsDir) },
         };
-        const report: ReadinessReport = { ...base, warnings: buildReadinessWarnings(base) };
+        const { blockers, notes } = classifyReadiness(base);
+        const report: ReadinessReport = { ...base, blockers, notes };
         await writeReadiness(this.getBundleRoot(), report);
-        if (report.warnings.length === 0) {
+        if (blockers.length === 0 && notes.length === 0) {
           console.log('[準備確認] 準備OK');
-        } else {
-          for (const w of report.warnings) console.warn('[準備確認] ' + w);
         }
-        return { success: true, warnings: report.warnings };
+        for (const b of blockers) console.error('[準備確認] 遊べません: ' + b);
+        for (const n of notes) console.warn('[準備確認] 気になる点: ' + n);
+        return { success: true, blockers, notes };
       } catch (error) {
         // 印を書けなくてもゲームは動く。バッチが「確かめられなかった」と言うだけにする
         console.error('[準備確認] ready.json を書けませんでした:', error);

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useCamera } from '../contexts/CameraContext';
 import { useConfig } from '../contexts/ConfigContext';
 import { useScreen } from '../contexts/ScreenContext';
-import { isAssetsLoaded } from '../utils/assets';
+import { didBackgroundPreloadFail } from '../utils/assets';
 
 /**
  * 「画面が出て、遊べる状態になった」ことを main へ1回だけ報告する。
@@ -79,7 +79,7 @@ export const useReportReady = (): void => {
     if (!cameraSettled && !settleTimedOut) return;
 
     reported.current = true;
-    // 🔴 **画面側のフラグ（assetsLoaded）ではなく、実際に読めたかを報告する。**
+    // 🔴 **報告するのは「先読みが失敗しなかったか」。**
     // App.tsx は読み込みが失敗しても setAssetsLoaded(true) で先へ進める
     // （ゲームは動くので、その判断自体は正しい）。そのぶん画面側のフラグは
     // 常に true になり、「読み込みが終わっていません」の警告が**到達不能**に
@@ -88,7 +88,7 @@ export const useReportReady = (): void => {
     // 背景が抜けた画面やカード合成の全滅に気づけない。
     void window.electronAPI
       ?.reportReady({
-        assetsLoaded: isAssetsLoaded(),
+        assetsLoaded: assetsLoaded && !didBackgroundPreloadFail(),
         cameraReady,
         usingDummyCamera: isUsingDummy,
         screen: currentScreen,

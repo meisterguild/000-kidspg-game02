@@ -29,7 +29,7 @@ if (!fs.existsSync(MODULE_PATH)) {
   throw new Error(`dist が見つかりません。先に \`npm run build\` を実行してください: ${MODULE_PATH}`);
 }
 const {
-  buildReadinessWarnings,
+  classifyReadiness,
   checkResultsWritable,
   clearReadiness,
   readinessFilePath,
@@ -53,62 +53,81 @@ const healthy = (overrides = {}) => ({
 
 // ---------------------------------------------------------------- 判定
 
-test('すべて整っていれば警告なし（＝準備完了）', () => {
-  assert.deepStrictEqual(buildReadinessWarnings(healthy()), []);
+/**
+ * 🔴 **ここの分け方が当日の運用判断そのもの。**
+ * 当日手順書は「★★★ 準備完了 ★★★ が出たら受付を開けてよい」と約束している。
+ * blockers に入れるのは「本当に遊べないもの」だけ。遊べるのに開場を止めると
+ * 回復手段が無いまま列が止まる（敵対的レビュー 2026-09-09 の指摘）。
+ */
+test('すべて整っていれば blockers も notes も空（＝★★★ 準備完了 ★★★）', () => {
+  const r = classifyReadiness(healthy());
+  assert.deepStrictEqual(r.blockers, []);
+  assert.deepStrictEqual(r.notes, []);
 });
 
-test('results に書けないことは必ず伝える（カードが1枚も残らない）', () => {
-  const w = buildReadinessWarnings(healthy({ results: { dir: 'D:\\x', writable: false } }));
-  assert.strictEqual(w.length, 1);
-  assert.match(w[0], /書き込めません/);
-  // どこに書けないのかが分からないと当日直せない
-  assert.match(w[0], /D:\\x/);
+test('results に書けないのは「遊べない」（カードが1枚も残らない）', () => {
+  const r = classifyReadiness(healthy({ results: { dir: 'D:/x', writable: false } }));
+  assert.strictEqual(r.blockers.length, 1);
+  assert.match(r.blockers[0], /書き込めません/);
+  assert.match(r.blockers[0], /D:\/x/);
+  assert.deepStrictEqual(r.notes, []);
 });
 
-test('カメラが無ければ伝える（全員ダミー写真になり AI 変換も走らない）', () => {
-  const w = buildReadinessWarnings(healthy({ usingDummyCamera: true }));
-  assert.strictEqual(w.length, 1);
-  assert.match(w[0], /カメラ/);
-  // 当日その場で直せる場所を書いておく
-  assert.match(w[0], /プライバシー/);
+test('素材が読めていないのは「遊べない」（コピーが不完全）', () => {
+  const r = classifyReadiness(healthy({ assetsLoaded: false }));
+  assert.strictEqual(r.blockers.length, 1);
+  assert.match(r.blockers[0], /背景アセット/);
 });
 
-test('カメラの初期化が決着していなければ伝える', () => {
-  const w = buildReadinessWarnings(healthy({ cameraReady: false }));
-  assert.ok(w.some((x) => /初期化が終わっていません/.test(x)));
+test('カメラの初期化が決着していないのは「遊べない」（撮影画面で止まりうる）', () => {
+  const r = classifyReadiness(healthy({ cameraReady: false }));
+  assert.strictEqual(r.blockers.length, 1);
+  assert.match(r.blockers[0], /初期化が終わっていません/);
+  assert.match(r.blockers[0], /プライバシー/);
 });
 
-test('ComfyUI に繋がらなければ伝える（絵が全員同じプレースホルダになる）', () => {
-  const w = buildReadinessWarnings(
+test('カメラが無いのは「遊べるが困る」（全員ダミー写真）', () => {
+  const r = classifyReadiness(healthy({ usingDummyCamera: true }));
+  assert.deepStrictEqual(r.blockers, [], '遊べるのに開場を止めています');
+  assert.strictEqual(r.notes.length, 1);
+  assert.match(r.notes[0], /カメラ/);
+});
+
+test('ComfyUI が落ちているのは「遊べるが困る」（絵が全員同じ）', () => {
+  const r = classifyReadiness(
     healthy({ comfyui: { profile: 'local', baseUrl: 'http://127.0.0.1:8188', healthy: false } })
   );
-  assert.strictEqual(w.length, 1);
-  assert.match(w[0], /ComfyUI/);
-  assert.match(w[0], /127\.0\.0\.1:8188/);
+  assert.deepStrictEqual(r.blockers, [], '遊べるのに開場を止めています');
+  assert.strictEqual(r.notes.length, 1);
+  assert.match(r.notes[0], /127.0.0.1:8188/);
 });
 
-test('ComfyUI の設定が無い場合も黙って通さない（AI変換なしで動くと伝える）', () => {
-  const w = buildReadinessWarnings(healthy({ comfyui: null }));
-  assert.strictEqual(w.length, 1);
-  assert.match(w[0], /AI変換なし/);
+test('AI 変換を意図して切った構成を異常扱いにしない', () => {
+  // README の退避策「config.json の comfyui セクションごと外す」を採った状態。
+  // 以前はこれで「準備できていません」と出て、最後の逃げ道を塞いでいた
+  const r = classifyReadiness(healthy({ comfyui: null }));
+  assert.deepStrictEqual(r.blockers, [], '意図した構成を遊べない扱いにしています');
+  assert.strictEqual(r.notes.length, 1);
+  assert.match(r.notes[0], /意図した構成なら問題ありません/);
 });
 
-test('問題が重なったら全部挙げる（1つ直して満足させない）', () => {
-  const w = buildReadinessWarnings(
+test('遊べないものと困ることが重なったら、両方を挙げる', () => {
+  const r = classifyReadiness(
     healthy({
       usingDummyCamera: true,
-      results: { dir: 'D:\\x', writable: false },
+      results: { dir: 'D:/x', writable: false },
       comfyui: { profile: 'local', baseUrl: 'http://x', healthy: false },
     })
   );
-  assert.strictEqual(w.length, 3);
+  assert.strictEqual(r.blockers.length, 1);
+  assert.strictEqual(r.notes.length, 2);
 });
 
 // ---------------------------------------------------------------- 印の読み書き
 
 test('印は書いたとおりに読める（起動バッチが JSON として読む）', async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-ready-'));
-  const report = { ...healthy(), warnings: [] };
+  const report = { ...healthy(), blockers: [], notes: [] };
   await writeReadiness(base, report);
   const file = readinessFilePath(base);
   assert.ok(fs.existsSync(file));
@@ -127,7 +146,7 @@ test('印は logs の下に置く（当日「様子を見るならこのフォ�
 
 test('印を消せる。無いところで消しても落ちない', async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-ready-'));
-  await writeReadiness(base, { ...healthy(), warnings: [] });
+  await writeReadiness(base, { ...healthy(), blockers: [], notes: [] });
   await clearReadiness(base);
   assert.ok(!fs.existsSync(readinessFilePath(base)));
   // 2回目（もう無い）でも例外にしない

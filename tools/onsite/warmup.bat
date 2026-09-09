@@ -92,15 +92,23 @@ echo.
 
 rem ------------------------------------------------------------
 echo [3/4] 1枚生成します（生成に使う部分も読ませるため。CPU で数分）
+set "GEN_FAILED="
 if not exist "%~dp0ops\node\node.exe" (
-  echo        [注意] ops\node\node.exe が無いので生成の暖機は飛ばします
+  echo        [中止] ops\node\node.exe がありません。生成の暖機ができません。
+  echo               未署名の .pyd を読ませられないので、暖機になりません。
+  set "GEN_FAILED=1"
 ) else (
   pushd "%~dp0ops"
   "%~dp0ops\node\node.exe" tools\comfyui-smoke.cjs --timeout-min 20
-  if errorlevel 1 (
-    echo        [注意] 生成が通りませんでした。下のブロック一覧を見てください
-  )
+  if errorlevel 1 set "GEN_FAILED=1"
   popd
+)
+if defined GEN_FAILED (
+  echo.
+  echo        🔴 生成が通りませんでした。
+  echo           **生成が通っていない暖機は暖機ではありません**——torch や scipy の
+  echo           未署名ファイルが一度も読まれないため、ブロックが 0 件でも
+  echo           それは「まだ試していない」という意味です。
 )
 echo.
 
@@ -111,15 +119,30 @@ if not exist "!SACCHECK!" (
   echo        [注意] 点検スクリプトが見つかりません : !SACCHECK!
   goto :done
 )
+rem COUNT / OTHER / UNKNOWN は数。それ以外の行はブロックされたファイル名。
+rem OTHER（無関係なソフト）を数に入れると「0 件になるまで」が永久に終わらない。
+rem UNKNOWN（ID 3118・誰のものか不明）を捨てると偽の成功になる
+rem （敵対的レビュー 2026-09-09 の指摘）。
+set "SACOTHER="
+set "SACUNKNOWN="
 for /f "usebackq tokens=1,* delims==" %%A in (`%PS% -File "!SACCHECK!" -Since "!T0!"`) do (
-  if /i "%%A"=="COUNT" ( set "SACCOUNT=%%B" ) else ( echo        %%A=%%B )
+  if /i "%%A"=="COUNT" set "SACCOUNT=%%B"
+  if /i "%%A"=="OTHER" set "SACOTHER=%%B"
+  if /i "%%A"=="UNKNOWN" set "SACUNKNOWN=%%B"
 )
+if defined SACOTHER echo        ＊ この企画と無関係なブロック: !SACOTHER! 件（気にしなくてよい）
 
 echo.
 echo ============================================================
 rem 「else if」の連鎖は cmd では書き方によって黙って外れるので使わない
-if "!SACCOUNT!"=="0" goto :sac_clean
+rem 🔴 未定義を先に拾う（以前は「★ ブロックが  件」と空欄で出た）
+if not defined SACCOUNT goto :sac_unknown
 if "!SACCOUNT!"=="-1" goto :sac_unknown
+if defined GEN_FAILED goto :sac_notdone
+if not defined SACUNKNOWN goto :sac_check_count
+if not "!SACUNKNOWN!"=="0" goto :sac_partial
+:sac_check_count
+if "!SACCOUNT!"=="0" goto :sac_clean
 goto :sac_blocked
 
 :sac_clean
@@ -135,6 +158,20 @@ goto :sac_done
 :sac_unknown
 echo   ★ 確かめられませんでした（イベントログを読めません）
 echo     権限のある状態で実行し直すか、当日は AI 変換なしの退避を用意してください
+goto :sac_done
+
+:sac_notdone
+echo   ★ 暖機できていません（生成が通っていないため）
+echo     ブロックは !SACCOUNT! 件ですが、未署名ファイルを読ませられていないので
+echo     この 0 件に意味はありません。上の生成の失敗理由を直してください。
+goto :sac_done
+
+:sac_partial
+echo   ★ 判定しきれませんでした
+echo     自分たちのファイルのブロックは !SACCOUNT! 件ですが、
+echo     誰のものか分からないブロックが !SACUNKNOWN! 件あります。
+echo     もう一度実行し、それでも残る場合はイベントビューアーで
+echo     Microsoft-Windows-CodeIntegrity/Operational を直接確認してください。
 goto :sac_done
 
 :sac_blocked

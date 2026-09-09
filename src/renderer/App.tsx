@@ -1,5 +1,10 @@
 import React, { useEffect } from 'react';
-import { preloadSpecificAssets, isAssetsLoaded, playSound } from './utils/assets';
+import {
+  preloadSpecificAssets,
+  isAssetsLoaded,
+  playSound,
+  markBackgroundPreloadFailed,
+} from './utils/assets';
 import { ALL_BACKGROUND_ASSETS } from '@shared/utils/constants';
 import { ScreenProvider, useScreen } from './contexts/ScreenContext';
 import { GameSessionProvider, useGameSession } from './contexts/GameSessionContext';
@@ -50,6 +55,9 @@ const AppContent: React.FC = () => {
         setAssetsLoaded(true);
       } catch (error) {
         console.error('バックグラウンドアセット読み込みエラー:', error);
+        // 続行するのは正しい（ゲームは動く）。ただし**黙って通さない**——
+        // 準備確認がこれを見て当日スタッフに伝える（hooks/useReportReady.ts）
+        markBackgroundPreloadFailed();
         setAssetsLoaded(true); // エラーでも続行
       }
     };

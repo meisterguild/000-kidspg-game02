@@ -47,6 +47,13 @@ rem ============================================================
 set "DRYRUN="
 if /i "%~1"=="/dryrun" set "DRYRUN=1"
 
+rem 🔴 %PS% は使う前に定義する。以前は未定義のまま
+rem   for /f ... in (`%PS% -Command "..."`) を書いており、
+rem   "'-Command' is not recognized..." という英語のエラーが出たうえで
+rem   --app-only パッケージの検出（安全網）が**完全に死んでいた**
+rem   （敵対的レビュー 2026-09-09 の指摘）。
+set "PS=powershell -NoProfile -ExecutionPolicy Bypass"
+
 set "TARGET=%KIDSPG_TARGET%"
 if not defined TARGET set "TARGET=C:\kidspg"
 

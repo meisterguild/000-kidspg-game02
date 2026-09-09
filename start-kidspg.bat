@@ -57,7 +57,10 @@ rem カメラが決着しない場合もアプリ側が 20 秒で打ち切って
 rem ここはそれより十分長くとる。
 set "READY_WAIT=90"
 rem ComfyUI の起動を待つ秒数（CPU実行なので初回は時間がかかる）
-set "COMFY_WAIT=180"
+rem 文書は「初回はモデルの読み込みに数分」と書いている。180 秒では朝いちばん
+rem （ディスクが冷えている）に足りず、後から立ち上がるのに警告が出ていた
+rem （敵対的レビュー 2026-09-09 の指摘）。
+set "COMFY_WAIT=300"
 
 set "WARN=0"
 set "DRYRUN="
@@ -99,7 +102,12 @@ if "!SAC!"=="1" (
   echo                  ウォームアップ.bat を通し、SAC に判定を取らせることです
   echo                  （判定が返るまでの間だけ止めているため。詳細は当日手順書）。
   echo                  ブロックされた記録: イベントビューアー ^> Microsoft-Windows-CodeIntegrity/Operational
-  set /a WARN+=1
+  rem 🔴 **ここで WARN を増やしてはいけない。**
+  rem 当日PCは「SAC はオフにしない」方針なので、当日は常に有効。
+  rem 増やすと WARN が必ず1以上になり、**★★★ 準備完了 ★★★ が原理的に出ない**。
+  rem 4つの文書が「★★★ が出ることを確かめる」と指示しているものが永久に出ない、
+  rem という状態だった（敵対的レビュー 2026-09-09 の指摘）。
+  rem 暖機済みなら正常なので、情報として出すだけにする。
 ) else (
   echo        OK : Smart App Control はアプリの起動を止めません
 )
@@ -327,7 +335,7 @@ rem    ゲーム（Electron + WebGL）がカクついて操作不能になるた
 rem  ・HF_* / TORCH_HOME / XDG_CACHE_HOME … 既定では %USERPROFILE%.cache へ
 rem    出てしまう。当日PCは1フォルダで完結させる方針なので中へ向ける
 rem  ・*_OFFLINE … 当日はオフライン。外へ探しに行って待たされるのを防ぐ
-set "LD_ENV=set OMP_NUM_THREADS=6&& set HF_HOME=%~dp0..<BS>ai<BS>cache<BS>huggingface&& set HF_HUB_CACHE=%~dp0..<BS>ai<BS>cache<BS>huggingface<BS>hub&& set TORCH_HOME=%~dp0..<BS>ai<BS>cache<BS>torch&& set XDG_CACHE_HOME=%~dp0..<BS>ai<BS>cache&& set HF_HUB_OFFLINE=1&& set TRANSFORMERS_OFFLINE=1"
+set "LD_ENV=set OMP_NUM_THREADS=6&& set HF_HOME=%~dp0..\ai\cache\huggingface&& set HF_HUB_CACHE=%~dp0..\ai\cache\huggingface\hub&& set TORCH_HOME=%~dp0..\ai\cache\torch&& set XDG_CACHE_HOME=%~dp0..\ai\cache&& set HF_HUB_OFFLINE=1&& set TRANSFORMERS_OFFLINE=1"
 set "LD_EXE=!COMFY_PY!"
 set "LD_RAWARGS=main.py --cpu --listen 127.0.0.1 --port %COMFY_PORT% --disable-auto-launch"
 set "LD_PATHARG="
@@ -530,30 +538,39 @@ rem 🔴 **いつの印かを必ず出す。** 判定は「その瞬間のスナ
 rem 報告後に ComfyUI が落ちたりカメラが抜かれたりしても印は変わらない。
 rem 時刻が出ていれば、スタッフが「さっきの話か」と判断できる
 rem （敵対的レビュー 2026-09-09 の指摘）。
-for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "try{ $r=(Get-Content -Raw -Encoding UTF8 '!READY_FILE!' | ConvertFrom-Json); 'RCOUNT=' + @($r.warnings).Count; 'RSCREEN=' + $r.screen; 'RAT=' + ([datetime]$r.readyAt).ToLocalTime().ToString('HH:mm:ss'); foreach($w in @($r.warnings)){ 'RWARN=' + $w } }catch{ 'RCOUNT=-1' }"`) do (
-  if /i "%%A"=="RCOUNT" set "RCOUNT=%%B"
+rem 🔴 **「遊べない」と「遊べるが困る」を分けて読む。**
+rem 以前は1つの warnings を見て、1件でもあれば「準備できていません」にしていた。
+rem そのためカメラを挿し忘れただけ・ComfyUI が落ちただけ・AI 変換を意図して
+rem 切っただけ、という**遊べる状態で開場を止めて**いた（敵対的レビュー 2026-09-09）。
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "try{ $r=(Get-Content -Raw -Encoding UTF8 '!READY_FILE!' | ConvertFrom-Json); 'RBLOCK=' + @($r.blockers).Count; 'RNOTE=' + @($r.notes).Count; 'RSCREEN=' + $r.screen; 'RAT=' + ([datetime]$r.readyAt).ToLocalTime().ToString('HH:mm:ss'); foreach($b in @($r.blockers)){ 'RB=' + $b }; foreach($n in @($r.notes)){ 'RN=' + $n } }catch{ 'RBLOCK=-1' }"`) do (
+  if /i "%%A"=="RBLOCK" set "RBLOCK=%%B"
+  if /i "%%A"=="RNOTE" set "RNOTE=%%B"
   if /i "%%A"=="RSCREEN" set "RSCREEN=%%B"
   if /i "%%A"=="RAT" set "RAT=%%B"
-  if /i "%%A"=="RWARN" echo        [警告] %%B
+  if /i "%%A"=="RB" echo        [遊べません] %%B
+  if /i "%%A"=="RN" echo        [注意] %%B
 )
-rem PowerShell が動かない・出力が1行も返らない場合、RCOUNT は空のままになる。
+rem PowerShell が動かない・出力が1行も返らない場合、RBLOCK は空のままになる。
 rem そのまま進むと「OK : ゲーム画面が出ました」と「準備できていません」が同時に出て、
 rem さらに set /a が Missing operand で英語のエラーを吐く
 rem （敵対的レビュー 2026-09-09 の指摘）。読めなかった扱いへ寄せる。
-if not defined RCOUNT set "RCOUNT=-1"
-if "!RCOUNT!"=="-1" (
+if not defined RBLOCK set "RBLOCK=-1"
+if not defined RNOTE set "RNOTE=0"
+if "!RBLOCK!"=="-1" (
   echo        [警告] 準備完了の報告を読めませんでした（logs\ready.json が壊れている）。
   set /a WARN+=1
   set "READY_NG=1"
   goto :ready_done
 )
 echo        OK : ゲーム画面が出ました（表示中: !RSCREEN! ／ 判定時刻 !RAT!）
-if not "!RCOUNT!"=="0" (
-  rem 起動はできたが当日困ることがある（カメラ無し・ComfyUI 落ち・results に書けない）。
-  rem これを黙って通すと、全員ダミー写真のまま開場することになる
-  set /a WARN+=!RCOUNT!
+rem 遊べないものがあるときだけ開場を止める
+if not "!RBLOCK!"=="0" (
+  set /a WARN+=!RBLOCK!
   set "READY_NG=1"
 )
+rem 遊べるが当日困ることは、止めずに必ず見せる
+rem （全員ダミー写真のまま開場する、を防ぐため）
+if not "!RNOTE!"=="0" set /a WARN+=!RNOTE!
 
 :ready_done
 echo.
@@ -710,8 +727,10 @@ if "!SACN!"=="0" exit /b 0
 if "!SACN!"=="-1" exit /b 0
 echo.
 echo        🔴 Smart App Control が !SACN! 件をブロックしています（直近15分）:
+rem COUNT= / OTHER= / UNKNOWN= は数なので、ブロックされたファイルの一覧に混ぜない
+rem （以前は「OTHER=0 というファイルが止められている」と読めた）
 for /f "usebackq tokens=*" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "!SACCHK!" -Minutes 15`) do (
-  echo "%%L" | find /i "COUNT=" > nul || echo             %%L
+  echo "%%L" | find "=" > nul || echo             %%L
 )
 echo           これが原因です。対処:
 echo             1. インターネットに繋いで ウォームアップ.bat を実行する

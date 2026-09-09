@@ -177,6 +177,25 @@ export const preloadSpecificAssets = async (assetKeys: AssetKey[]): Promise<void
   }
 };
 
+/**
+ * 背景アセットの先読みが**失敗したか**。
+ *
+ * ⚠️ isAssetsLoaded() は「登録されている全アセットが揃ったか」なので、
+ * 起動直後の背景先読み（ALL_BACKGROUND_ASSETS は一部）が正常に終わっても
+ * false のままになる。準備確認でこれを「読み込めていない」と報告すると、
+ * **正常なアプリで「遊べません」と出る**（2026-09-09 に実機でそうなった）。
+ * 判定に使うのは「失敗したかどうか」であって「全部揃ったか」ではない。
+ */
+let backgroundPreloadFailed = false;
+
+/** 先読みが失敗したことを記録する（App.tsx の catch から呼ぶ） */
+export const markBackgroundPreloadFailed = (): void => {
+  backgroundPreloadFailed = true;
+};
+
+/** 先読みが失敗していたか。準備確認はこれを見る */
+export const didBackgroundPreloadFail = (): boolean => backgroundPreloadFailed;
+
 // アセットマネージャーを取得する（このファイルの中だけで使う）。
 //
 // 全アセットを一括で読む loadAssets、画像を引く getImage、PixiJS 互換の no-op
