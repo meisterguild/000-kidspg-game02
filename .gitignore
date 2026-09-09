@@ -44,6 +44,14 @@ yarn-error.log*
 
 # KidsPG
 .claude/
+
+# ただし .claude/skills/ は**共有したい**（このリポジトリの作業手順そのものなので、
+# 誰が clone しても同じ /コマンド が使えるようにする）。
+# 例: /long-review = 長時間離席時のレビュー＆修正ループ
+!/.claude/
+!/.claude/skills/
+!/.claude/skills/**
+
 results/
 results*/
 docs/memorial_site_src/card_images/*

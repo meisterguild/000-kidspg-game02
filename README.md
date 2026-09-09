@@ -649,6 +649,7 @@ npm run recovery:dry   # 上のドライラン
 | ワークフローの設計と「アプリ側との約束」 | [assets/ComfyUI_KidsPG_2026_01.README.md](assets/ComfyUI_KidsPG_2026_01.README.md) |
 | 夜間作業レポート | `../docs/夜間作業レポート_20260901.md` / `_20260902.md` |
 | 素材とライセンス | [CREDITS.md](CREDITS.md) |
+| 長時間離席時のレビュー＆修正の手順（`/long-review`） | [.claude/skills/long-review/SKILL.md](.claude/skills/long-review/SKILL.md) |
 | 個人情報とデータの取り扱い | `../docs/個人情報とデータの取り扱い.md` |
 
 ---
