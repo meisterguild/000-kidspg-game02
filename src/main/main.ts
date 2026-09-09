@@ -35,6 +35,8 @@ import {
 } from './services/readiness';
 import { resolveMagick } from './services/magick-path';
 import { locateAsset } from './services/asset-locator';
+import { writeJsonAtomic } from './services/write-json-atomic';
+import { collectBalanceWarnings } from './services/balance-warnings';
 import { applyConfigPatch } from './services/config-writer';
 
 /**
@@ -619,21 +621,51 @@ class ElectronApp {
               const imageGeneratePath = path.join(dirPath, 'image_generate.json');
               await fs.writeFile(imageGeneratePath, JSON.stringify(workflowTemplate, null, 2));
 
-              // ComfyUIが有効な場合、即座に画像をアップロード＆変換開始
+              // ComfyUI が有効なら、写真の先渡しと変換の投入をここで始める。
+              //
+              // 🔴 **await で待たないこと。** `save-photo` の戻りを
+              // CameraPage が待ってからカウントダウンへ進むため、ここで待つと
+              // 「はい」を押した子どもが無反応の画面で待たされる。
+              // ComfyUI が前の子の推論中は HTTP 応答が数十秒止まる
+              // （comfyui-worker に実測が書いてある）ので、最悪
+              // timeouts.upload の 60 秒まで待つことになる——**前の子の生成中に
+              // 次の子が撮る**のは当日の通常状態なので、ほぼ毎回踏む
+              // （敵対的レビュー 2026-09-09 の指摘）。
+              //
+              // 🔴 **プリアップロードの失敗で変換の投入を止めないこと。**
+              // 以前は同じ try に直列に置いていたため、アップロードが1回失敗した
+              // だけで transformImage に到達せず、**その子のジョブが1件も
+              // キューに入らない**。しかも `will handle later` と書いてあるのに
+              // 後で拾う経路は無く、手掛かりは console.warn 1行だけだった。
+              // ワーカーは先渡しが無ければ自分でアップロードするので
+              // （comfyui-worker の processJob）、先渡しは**速くするための最適化**に
+              // すぎない。失敗しても投入は必ず行う。
               if (this.comfyUIService) {
-                try {
-                  // 1. プリアップロード
-                  await this.comfyUIService.preUploadImage(base64Data, dateTime);
-                  
-                  // 2. 即座に変換開始
-                  await this.comfyUIService.transformImage({
-                    imageData: base64Data,
-                    datetime: dateTime,
-                    resultDir: dirPath
-                  });
-                } catch (error) {
-                  console.warn('Pre-upload or transform failed, will handle later:', error);
-                }
+                const service = this.comfyUIService;
+                void (async () => {
+                  try {
+                    await service.preUploadImage(base64Data, dateTime);
+                  } catch (error) {
+                    // 先渡しは最適化。失敗してもワーカー側で上げ直せる
+                    console.warn('[ComfyUI] 写真の先渡しに失敗しました（ワーカー側で上げ直します）:', error);
+                  }
+                  try {
+                    await service.transformImage({
+                      imageData: base64Data,
+                      datetime: dateTime,
+                      resultDir: dirPath,
+                    });
+                  } catch (error) {
+                    // ここまで失敗するとその子はプレースホルダで確定する。
+                    // 黙って通さず、スタッフに見せる（帯は StaffNoticeBanner）
+                    console.error('[ComfyUI] 変換の投入に失敗しました:', dateTime, error);
+                    this.notifyStaff(
+                      'comfyui-submit-failed',
+                      'AI変換を開始できませんでした（' + dateTime + '）。' +
+                        'この回のカードはプレースホルダになります。ComfyUI の状態を確認してください。'
+                    );
+                  }
+                })();
               }
             } catch (error) {
               console.error('[ComfyUI] CRITICAL - Failed to process template or start transformation:', error);
@@ -662,7 +694,15 @@ class ElectronApp {
     ipcMain.handle('save-json', async (event, dirPath: string, jsonData: object) => {
       try {
         const filePath = path.join(dirPath, 'result.json');
-        await fs.writeFile(filePath, JSON.stringify(jsonData, null, 2));
+        // 🔴 **直書きしないこと。** これは後日のカード公開の正本で、ここが
+        // 書けないとその子のプレイはランキングにも履歴にも一切現れない
+        // （写真だけの孤児フォルダが残り、起動時点検も「ゲーム未完了」として
+        // 素通りする）。Windows ではランキング画面の監視・ウイルス対策・
+        // OneDrive 同期が対象を掴んで EPERM / EBUSY になる。
+        // results.json とカードパスの記録は最初からこの仕組みを通っていたのに、
+        // **正本を最初に作る書き込みだけが直書き**だった
+        // （敵対的レビュー 2026-09-09 の指摘）。
+        await writeJsonAtomic(filePath, jsonData);
         
         const dateTime = path.basename(dirPath);
         
@@ -756,7 +796,15 @@ class ElectronApp {
         
         return { success: true, filePath: filePath };
       } catch (error) {
+        // 🔴 **黙って通さない。** ここが失敗するとその子の記録が消える。
+        // 画面側は alert を出すが、子どもがそれを消してしまうので
+        // スタッフ向けの帯にも出す（消えない）。
         console.error('Failed to save JSON:', error);
+        this.notifyStaff(
+          'result-json-failed',
+          '記録の保存に失敗しました（' + path.basename(dirPath) + '）。' +
+            'この回はランキングに出ません。スタッフへ知らせてください。'
+        );
         return { success: false, error: String(error) };
       }
     });
@@ -861,11 +909,18 @@ class ElectronApp {
     // 設定ファイルを再読み込み
     ipcMain.handle('reload-config', async () => {
       try {
+        const previous = this.config;
         this.config = await this.loadConfig();
+        // 保持件数（results.maxRecent / maxRanking）を読み直した値へ揃える
+        this.resultsManager?.updateConfig(this.config);
         // 解決済みの ComfyUI 設定も作り直す。ここを忘れると、手で config.json を
         // 編集して再読み込みしても生成パラメータが古いまま使われる
         const restartRequired = this.refreshResolvedComfyUI();
-        const warnings = await this.collectGenerationWarnings();
+        const warnings = [
+          ...(await this.collectGenerationWarnings()),
+          // 手でエディタから触った分もここで拾う（設定画面からの保存と同じ扱い）
+          ...collectBalanceWarnings(previous, this.config),
+        ];
         return { success: true, config: this.config, restartRequired, warnings };
       } catch (error) {
         console.error('設定ファイルの再読み込みに失敗しました:', error);
@@ -907,6 +962,8 @@ class ElectronApp {
         await fs.rename(tempPath, configPath);
 
         this.config = nextConfig as unknown as AppConfig;
+        // 保持件数（results.maxRecent / maxRanking）を保存した値へ揃える
+        this.resultsManager?.updateConfig(this.config);
 
         // 生成パラメータは撮影のたびにテンプレートを読み直して適用するため、
         // ここで解決結果を差し替えるだけで次のプレイから効く。
@@ -916,9 +973,13 @@ class ElectronApp {
         const warnings = [
           ...(this.comfyUI?.warnings ?? []),
           ...(await this.collectGenerationWarnings()),
+          // 🔴 「クリア面数＝ランク＝カード背景」の対応が崩れうる変更を必ず言う。
+          // 縛っているのは npm test だけで、当日 CLI は叩けない
+          // （理由は services/balance-warnings.ts）。
+          ...collectBalanceWarnings(currentRaw, nextConfig),
         ];
         for (const warning of warnings) {
-          console.warn('[ComfyUI] 生成パラメータの警告:', warning);
+          console.warn('[設定] 保存時の警告:', warning);
         }
 
         return { success: true, config: this.config, restartRequired, warnings };
@@ -1371,6 +1432,27 @@ class ElectronApp {
    * ・await せずチェーンに積むのは、ダイアログを閉じるまでアプリの初期化を止めないため。
    *   複数の警告（ImageMagick 欠落と ComfyUI 未接続）が同時に出ても重ならないよう直列化する。
    */
+  /**
+   * 稼働中の出来事をスタッフへ知らせる（画面上端の帯だけ。OS ダイアログは出さない）。
+   *
+   * 🔴 **プレイ中に OS のモーダルを出してはいけない。** 子どもの操作が止まる。
+   * だから起動時の `warnAtStartup` とは分けてある。
+   *
+   * ■ なぜ要るのか（敵対的レビュー 2026-09-09 の指摘）
+   * 稼働中の ComfyUI 障害（ワーカーの死亡・ジョブの失敗・投入の失敗）は
+   * `comfyui-error` / `comfyui-job-error` で renderer へ送っていたが、
+   * **購読者はテスト画面だけ**で本番画面には無かった。以後、撮影は通り
+   * カードはプレースホルダで出続け、**誰も気づかないまま数十人ぶんが
+   * プレースホルダになる**。同じ壊れ方（startup-warning に購読者が無かった）を
+   * 一度直したのに、稼働中の経路だけが素通りしていた。
+   */
+  private notifyStaff(kind: string, message: string): void {
+    console.warn('[スタッフへ] ' + message);
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send('startup-warning', { kind, message });
+    }
+  }
+
   private warnAtStartup(kind: string, message: string): void {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send('startup-warning', { kind, message });
@@ -1555,12 +1637,29 @@ AI変換なしで動作します。`);
       return; // すでに処理済み／処理中
     }
 
-    if (currentState !== 'dummy_completed') {
-      // ダミーカードがまだできていない＝AI変換が先に終わった。
-      // 捨てずに保持しておき、ダミー完成後に必ず消化する。
+    if (currentState === 'dummy_inprogress') {
+      // プレースホルダ版の合成中。いま本カードを作ると、あとから終わった
+      // ダミーが上書きしうるので保留し、そちらの完了時に消化してもらう
+      // （save-json のコールバックが成功・失敗・例外のどの枝でも消化する）。
       this.pendingAICompletions.set(dateTime, jobId);
-      console.log(`ElectronApp - AI card completion is pending until the dummy card is ready: ${dateTime} (state: ${currentState})`);
+      console.log(`ElectronApp - AI card completion is pending until the dummy card is ready: ${dateTime}`);
       return;
+    }
+
+    // 🔴 **`dummy_completed` 以外を全部保留にしてはいけない。**
+    // プレースホルダ版の合成が失敗するとフラグは削除され（state = undefined）、
+    // その場で保留を見にいくが、AI変換は約170秒かかるので**まだ届いていない**。
+    // 1分後に届いた完了は「dummy_completed ではない」として保留に積まれ、
+    // 消化はそのコールバックの中にしか無いので**誰も消化しない**——
+    // プレースホルダ版も本カードも無い、**カードが1枚も存在しない子**が
+    // 当日ひとり出来ていた（敵対的レビュー 2026-09-09 の指摘）。
+    // 合成の失敗は絵空事ではない（OneDrive・ウイルス対策・ランキング画面の
+    // 監視による共有違反で rename が落ちる。card-output に実測がある）。
+    // ダミーが無くても本カードは単体で作れるので、ここは進める。
+    if (currentState === undefined) {
+      console.warn(
+        `ElectronApp - プレースホルダ版カードが無い状態でAI完了を受けました。本カードだけ作ります: ${dateTime}`
+      );
     }
 
     await this.runAIMemorialCard(jobId, resultDir, dateTime);
