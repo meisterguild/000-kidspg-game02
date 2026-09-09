@@ -199,6 +199,23 @@ if (APP_ONLY) {
           problems.push({ m, reason: forbid + ' が入っています（入れてはいけません）' });
         }
       }
+      // 「フォルダはあってよいが、中にファイルがあってはいけない」もの。
+      // ComfyUI は input/ と output/ を使うので**空で用意する必要がある**が、
+      // そこに検証で使った顔写真が残るのは絶対に避けたい。
+      // フォルダの存在自体を禁じると、空で用意した正しい状態まで弾いてしまう
+      // （2026-09-09 にそれで作成が止まった）。
+      for (const mustEmpty of m.mustBeEmpty || []) {
+        const dir = path.join(src, mustEmpty);
+        if (!fs.existsSync(dir)) continue;
+        const inside = dirSize(dir);
+        if (inside.files > 0) {
+          problems.push({
+            m,
+            reason:
+              mustEmpty + '/ に ' + inside.files + ' 件のファイルがあります（空でなければいけません）',
+          });
+        }
+      }
       for (const f of m.files || []) {
         const p = path.join(src, f.path);
         if (!fs.existsSync(p)) {
@@ -484,6 +501,10 @@ if (!APP_ONLY) {
 // ------------------------------------------------------------------ 7. 入口と手順書
 step('7/8', 'セットアップ用の入口と手順書');
 copyFile(path.join(__dirname, 'onsite', '0_setup.bat'), path.join(outDir, '0_セットアップ.bat'));
+// 暖機は**当日PC側**で（コピー後に）実行するので、payload の直下に置く。
+// これが C:\kidspg\ウォームアップ.bat になる。
+// 🔴 Smart App Control をオフにせずに済ませるための要。前日までにオンラインで通す
+copyFile(path.join(__dirname, 'onsite', 'warmup.bat'), path.join(payload, 'ウォームアップ.bat'));
 // 0_セットアップ.bat が隣から呼ぶ。忘れると照合だけが黙って飛ぶ
 copyFile(path.join(__dirname, 'onsite', 'verify-copy.ps1'), path.join(outDir, 'verify-copy.ps1'));
 copyFile(path.join(ROOT, 'docs', 'setup-onsite.md'), path.join(outDir, '1_当日手順書.md'));

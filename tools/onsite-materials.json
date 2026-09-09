@@ -39,9 +39,11 @@
       ],
       "mustNotContain": [
         "venv",
-        "input",
-        "output",
         ".git"
+      ],
+      "mustBeEmpty": [
+        "input",
+        "output"
       ]
     },
     {
@@ -83,5 +85,6 @@
       "expectedBytes": 0,
       "note": "torch が要求する VC++ 2015-2022 再頒布可能パッケージ。Windows 11 なら通常入っているので、点検で不足していたときだけ使う。これだけはインストール操作が要る。https://aka.ms/vs/17/release/vc_redist.x64.exe"
     }
-  ]
+  ],
+  "_must_be_empty_policy": "mustBeEmpty は「フォルダはあってよいが、中にファイルがあってはいけない」。ComfyUI は input/ と output/ を使うので空で用意する必要があるが、そこに検証で使った顔写真が残るのは絶対に避けたい。フォルダの存在自体を禁じると、空で用意した正しい状態まで弾いてしまう（2026-09-09 にそれで作成が止まった）。"
 }

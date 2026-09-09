@@ -242,6 +242,13 @@ test('配って良いものを誤検出しない', () => {
   assert.deepStrictEqual(findForbiddenFiles(ok), []);
 });
 
+test('作成スクリプトは mustBeEmpty を「中のファイル」で判定する', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'make-onsite-package.cjs'), 'utf8');
+  assert.match(src, /mustBeEmpty/, 'mustBeEmpty を見ていません');
+  // フォルダの有無ではなくファイル数で判断していること
+  assert.match(src, /inside.files > 0/, 'ファイル数で判定していません');
+});
+
 test('作成スクリプトは組み立てたあとに持ち出し検査をする', () => {
   const src = fs.readFileSync(path.join(__dirname, 'make-onsite-package.cjs'), 'utf8');
   assert.match(src, /findForbiddenFiles/, '持ち出し検査を呼んでいません');
@@ -272,6 +279,79 @@ test('資材を組むスクリプトが、実測で踏んだ落とし穴を押�
   assert.match(src, /photo_\*\.png/, '顔写真の混入を見ていません');
 });
 
+// ------------------------------------------- Smart App Control 対策
+
+/**
+ * 🔴 **SAC はオフにしない**（2026-09-09 判断。オフは戻せないため利用者の判断で不可）。
+ * 代わりに「前日までにオンラインで暖機して判定を取り切る」方式にした。
+ *
+ * 実測: 新しく置いた scipy の .pyd がブロックされて ComfyUI が落ちたが、
+ * **中身が同一（SHA256 一致）で前から置いてあったファイルは動いていた**。
+ * つまり SAC は危険と言っているのではなく、判定を取りに行っている間だけ止める。
+ */
+test('暖機の道具が揃っている', () => {
+  for (const rel of ['tools/onsite/warmup.bat', 'tools/onsite/check-sac-blocks.ps1']) {
+    assert.ok(fs.existsSync(path.join(ROOT, rel)), rel + ' がありません');
+  }
+  const warm = fs.readFileSync(path.join(ROOT, 'tools/onsite/warmup.bat'), 'utf8');
+  // オンラインで実行することが伝わらないと暖機にならない
+  assert.match(warm, /インターネットに繋いだ状態/);
+  // 1回で取り切れないことがあるので、繰り返す案内が要る
+  assert.match(warm, /もう一度このバッチを実行/);
+  // オフにしろ**とは言わない**。
+  // ⚠️ 「オフにする必要はない」という説明とは区別する必要がある
+  //    （最初はここを雑に見て、自分の文面で落ちた）。見るのは命令形だけ。
+  assert.ok(
+    !/オフに(して|しま)/.test(warm),
+    'SAC をオフにするよう指示しています（この方針は採らない）'
+  );
+  // 逆に「オフにしなくてよい」ことは書いてある必要がある
+  assert.match(warm, /オフにする必要はない|オフにする必要はありません/);
+});
+
+test('起動バッチは失敗時に SAC のブロックを名前で出す', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf8');
+  assert.match(raw, /^:report_sac/m, 'report_sac が定義されていません');
+  // ComfyUI が上がらなかったとき / 準備確認が時間切れのとき、両方から呼ぶ
+  const calls = (raw.match(/call :report_sac/g) || []).length;
+  assert.strictEqual(calls, 2, 'SAC の報告を呼ぶ箇所が 2 つではありません');
+  assert.match(raw, /ウォームアップ/, '暖機への案内がありません');
+});
+
+test('パッケージは暖機バッチを当日PCの直下へ置く', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'make-onsite-package.cjs'), 'utf8');
+  assert.match(src, /warmup.bat/, '暖機バッチを入れていません');
+  // app/ ではなく payload の直下（= C:kidspg 直下）に置く
+  assert.match(src, /payload, 'ウォームアップ.bat'/);
+});
+
+test('PowerShell スクリプトは UTF-8 BOM 付き', () => {
+  // 🔴 powershell 5.1 は BOM の無い UTF-8 を CP932 と誤読する。
+  // 2026-09-09 に check-sac-blocks.ps1 がそれで構文エラーになり、
+  // build-materials.ps1 も同じ状態だった（実行前に気づけた）。
+  for (const rel of [
+    'tools/onsite/check-sac-blocks.ps1',
+    'tools/onsite/verify-copy.ps1',
+    'tools/onsite/build-materials.ps1',
+  ]) {
+    const buf = fs.readFileSync(path.join(ROOT, rel));
+    assert.ok(
+      buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf,
+      rel + ' に UTF-8 BOM がありません（PowerShell 5.1 が日本語を誤読します）'
+    );
+  }
+});
+
+test('bat には BOM を付けない（cmd が1行目を実行しようとする）', () => {
+  for (const rel of ['start-kidspg.bat', 'stop-kidspg.bat', 'tools/onsite/0_setup.bat', 'tools/onsite/warmup.bat']) {
+    const buf = fs.readFileSync(path.join(ROOT, rel));
+    assert.ok(
+      !(buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf),
+      rel + ' に BOM があります'
+    );
+  }
+});
+
 // ---------------------------------------------------------------- bat の作法
 
 /**
@@ -284,8 +364,10 @@ test('資材を組むスクリプトが、実測で踏んだ落とし穴を押�
 test('当日PC用のスクリプトは CRLF（cmd が LF の bat を解釈できない）', () => {
   const targets = [
     'tools/onsite/0_setup.bat',
+    'tools/onsite/warmup.bat',
     'tools/onsite/verify-copy.ps1',
     'tools/onsite/build-materials.ps1',
+    'tools/onsite/check-sac-blocks.ps1',
     'start-kidspg.bat',
     'stop-kidspg.bat',
   ];
@@ -297,7 +379,7 @@ test('当日PC用のスクリプトは CRLF（cmd が LF の bat を解釈でき
 });
 
 test('bat の先頭は ASCII だけ（CP932 のコンソールが UTF-8 を誤読するため）', () => {
-  for (const rel of ['tools/onsite/0_setup.bat', 'start-kidspg.bat', 'stop-kidspg.bat']) {
+  for (const rel of ['tools/onsite/0_setup.bat', 'tools/onsite/warmup.bat', 'start-kidspg.bat', 'stop-kidspg.bat']) {
     const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     // BOM があると cmd が1行目を実行しようとして失敗する
     assert.ok(!raw.startsWith('﻿'), rel + ' に BOM があります');
@@ -345,6 +427,16 @@ test('外部資材の目録は必要な項目を持ち、venv を持ち込まな
   const comfy = def.materials.find((m) => m.key === 'comfyui');
   assert.ok(comfy.mustNotContain.includes('venv'), 'venv を入れない決めごとが消えています');
   assert.ok(comfy.mustContain.includes('main.py'));
+
+  // 🔴 input/ と output/ は**フォルダは要るが中は空**でなければならない。
+  // ComfyUI が使うのでフォルダごと禁じると空の正しい状態まで弾いてしまい、
+  // 逆に中身を許すと検証で使った顔写真が USB に載る。
+  assert.ok(comfy.mustBeEmpty.includes('input'), 'input を空にする決めごとがありません');
+  assert.ok(comfy.mustBeEmpty.includes('output'), 'output を空にする決めごとがありません');
+  assert.ok(
+    !comfy.mustNotContain.includes('input'),
+    'input はフォルダごと禁じてはいけない（ComfyUI が使う）'
+  );
 
   // モデルは local プロファイルの4本。サイズ照合が効いていること
   const models = def.materials.find((m) => m.key === 'models');

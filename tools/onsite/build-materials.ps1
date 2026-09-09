@@ -1,4 +1,4 @@
-# 当日PC向けパッケージの「リポジトリの外の資材」を、開発機で1回だけ組む。
+﻿# 当日PC向けパッケージの「リポジトリの外の資材」を、開発機で1回だけ組む。
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\onsite\build-materials.ps1
 #

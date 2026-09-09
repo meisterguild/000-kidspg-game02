@@ -190,7 +190,7 @@ test('中止した場合は「準備完了」と言わない', () => {
 });
 
 test('まとめの分岐に else if を使わない（cmd では黙って外れることがある）', () => {
-  for (const rel of ['start-kidspg.bat', 'stop-kidspg.bat', 'tools/onsite/0_setup.bat']) {
+  for (const rel of ['start-kidspg.bat', 'stop-kidspg.bat', 'tools/onsite/0_setup.bat', 'tools/onsite/warmup.bat']) {
     const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     assert.deepStrictEqual(raw.match(/\) else if /g), null, rel + ' に else if の連鎖があります');
   }

@@ -259,11 +259,21 @@ if defined STOP (
   echo        ・カメラのプライバシー設定を ON
   echo        ・スリープと画面オフを「なし」に
   echo        ・音量とスピーカーの確認
-  echo     2. %TARGET%\ai\ComfyUI\start-comfyui.bat を実行して ComfyUI を起こす
-  echo        （初回はモデルの読み込みに数分かかります）
-  echo     3. %TARGET%\app\start-kidspg.bat /dryrun で点検し、[警告] が無いことを見る
-  echo     4. %TARGET%\app\start-kidspg.bat でアプリを起動し、1プレイ通す
-  echo        results\^<日時^>\memorial_card_*.png ができれば成功です
+  echo.
+  echo     2. 🔴 **インターネットに繋いだ状態で** %TARGET%\ウォームアップ.bat を実行する
+  echo        Windows 11 の Smart App Control は、署名の無いファイルを初めて読むとき
+  echo        クラウドへ判定を問い合わせ、返るまでブロックします。ComfyUI が読む
+  echo        .pyd は全部署名がないので、当日オフラインだとこれに当たり得ます。
+  echo        前日までに一度オンラインで読ませ、判定を取り切っておきます。
+  echo        ＊ SAC をオフにする必要はありません。
+  echo        ＊ ブロックが 0 件になるまで繰り返してください（数回かかることがあります）。
+  echo.
+  echo     3. インターネットを切り、**PCを再起動**する
+  echo.
+  echo     4. %TARGET%\app\start-kidspg.bat を実行し、
+  echo        ★★★ 準備完了 ★★★ が出ることを確かめる（これが当日の形）
+  echo.
+  echo     5. 1プレイ通し、results\^<日時^>\memorial_card_*.png ができれば成功です
 )
 echo ============================================================
 echo.

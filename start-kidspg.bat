@@ -337,6 +337,9 @@ if !WAITED! GEQ %COMFY_WAIT% (
   echo        [警告] %COMFY_WAIT% 秒待ちましたが応答がありません。
   echo               logs\comfyui.log にエラーが出ていないか見てください。
   set /a WARN+=1
+  rem Smart App Control に .pyd を止められていると、ログには
+  rem 「DLL load failed ...」の1行しか出ず、原因が分からない。名前で言う
+  call :report_sac
   goto :comfy_done
 )
 set /a WAITED+=3
@@ -481,6 +484,7 @@ if !RWAITED! GEQ %READY_WAIT% (
   echo               終わっていない可能性があります（Windows の設定 ^> プライバシー ^> カメラ）。
   set /a WARN+=1
   set "READY_NG=1"
+  call :report_sac
   goto :ready_done
 )
 set /a RWAITED+=2
@@ -606,6 +610,44 @@ for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "$
 )
 if not defined LIVE_COUNT set "LIVE_COUNT=0"
 if not defined ZOMBIE_COUNT set "ZOMBIE_COUNT=0"
+exit /b 0
+
+rem ------------------------------------------------------------
+rem  Smart App Control にブロックされたものを名前で出す。
+rem
+rem  🔴 **これが無いと当日は原因に辿り着けない。**
+rem  SAC に .pyd を止められたときの見え方は、ComfyUI のログに
+rem    ImportError: DLL load failed while importing cython_special:
+rem      アプリケーション制御ポリシーによってこのファイルはブロックされました。
+rem  という1行が残るだけ（2026-09-09 実測）。スタッフがこれを見て
+rem  「SAC が原因」と判断するのは無理がある。
+rem
+rem  SAC は判定を取りに行っている間だけ止めるので、**前日までにオンラインで
+rem  暖機**しておけば当日は起きない（ウォームアップ.bat）。それでも起きたときに
+rem  「何が止められたか」だけは見えるようにしておく。
+rem ------------------------------------------------------------
+:report_sac
+set "SACCHK="
+if exist "%~dp0..\ops\tools\onsite\check-sac-blocks.ps1" set "SACCHK=%~dp0..\ops\tools\onsite\check-sac-blocks.ps1"
+if not defined SACCHK if exist "%~dp0tools\onsite\check-sac-blocks.ps1" set "SACCHK=%~dp0tools\onsite\check-sac-blocks.ps1"
+if not defined SACCHK exit /b 0
+set "SACN="
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -File "!SACCHK!" -Minutes 15`) do (
+  if /i "%%A"=="COUNT" ( set "SACN=%%B" ) else ( set "SACLINE=%%A=%%B" )
+)
+if not defined SACN exit /b 0
+if "!SACN!"=="0" exit /b 0
+if "!SACN!"=="-1" exit /b 0
+echo.
+echo        🔴 Smart App Control が !SACN! 件をブロックしています（直近15分）:
+for /f "usebackq tokens=*" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "!SACCHK!" -Minutes 15`) do (
+  echo "%%L" | find /i "COUNT=" > nul || echo             %%L
+)
+echo           これが原因です。対処:
+echo             1. インターネットに繋いで ウォームアップ.bat を実行する
+echo                （SAC に判定を取らせる。1回で済まないことがあるので繰り返す）
+echo             2. そのあとネットを切って再起動し、もう一度このバッチを実行する
+echo           ＊ SAC をオフにする必要はありません。
 exit /b 0
 
 rem ------------------------------------------------------------
