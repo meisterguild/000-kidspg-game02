@@ -33,6 +33,11 @@ rem    3. アプリ本体（Electron 本体 + dist）の確認と、ビルドが
 rem    4. ComfyUI（AI画像変換）の確認と、止まっていれば起動
 rem    5. 二重起動の確認
 rem    6. アプリ起動
+rem    7. 準備確認（**ゲーム画面が本当に出たか**をアプリ自身の報告で確かめる）
+rem
+rem  当日の運用は「モニタとPCを置く → 電源 → このバッチ → 準備完了」だけにしたい。
+rem  そのため 7 が要る。6 まではアプリを**起こした**ことしか確かめていないので、
+rem  起動に失敗しても「起動しました／問題なし」と表示できてしまっていた。
 rem
 rem  動作確認だけしたいとき（何も起動しない）:  start-kidspg.bat /dryrun
 rem  別の場所の exe を使いたいとき:  set KIDSPG_APP_EXE=D:\kidspg\KidsPGグミパズル.exe
@@ -44,6 +49,13 @@ rem [4/6] で config.json を読んだ時点で上書きされる。2箇所に�
 rem 当日 PC の置き場所を変えたときに片方だけ直して気づかない。
 set "COMFY_DIR=C:\WORK\AI\ComfyUI_20260902_0.34.0\ComfyUI"
 set "COMFY_PORT=8188"
+rem アプリ自身が「画面が出て遊べる状態になった」と書く印。
+rem 書くのは main の app-ready（src/main/services/readiness.ts）。
+set "READY_FILE=%~dp0logs\ready.json"
+rem 準備が整うまで待つ秒数。Electron の起動 + アセット読み込み + カメラ初期化ぶん。
+rem カメラが決着しない場合もアプリ側が 20 秒で打ち切って報告するので、
+rem ここはそれより十分長くとる。
+set "READY_WAIT=90"
 rem ComfyUI の起動を待つ秒数（CPU実行なので初回は時間がかかる）
 set "COMFY_WAIT=180"
 
@@ -59,7 +71,7 @@ echo ============================================================
 echo.
 
 rem ------------------------------------------------------------
-echo [1/6] 実行場所の点検
+echo [1/7] 実行場所の点検
 echo        フォルダ : %~dp0
 set "ONEDRIVE_HIT="
 echo "%~dp0" | find /i "OneDrive" > nul && set "ONEDRIVE_HIT=1"
@@ -94,7 +106,7 @@ if "!SAC!"=="1" (
 echo.
 
 rem ------------------------------------------------------------
-echo [2/6] ImageMagick の確認（記念カードの合成に必要）
+echo [2/7] ImageMagick の確認（記念カードの合成に必要）
 rem 配布版は ImageMagick を**インストールせず**、隣の bin\ImageMagick に携帯版を置く。
 rem PATH を恒久的に書き換えず、この起動のあいだだけ先頭に足す。
 rem 子プロセス（Electron → magick）はこの PATH を受け継ぐので、
@@ -117,7 +129,7 @@ if errorlevel 1 (
 echo.
 
 rem ------------------------------------------------------------
-echo [3/6] アプリ本体の確認
+echo [3/7] アプリ本体の確認
 rem 起動のしかたは2通り。
 rem   electron … Electron 本体に、このフォルダのアプリ（dist\）を読ませて起動する ← 既定
 rem   exe      … electron-builder が作った exe（release\win-unpacked\*.exe）を起動する
@@ -160,6 +172,8 @@ if not defined APP_EXE (
   echo               release\win-unpacked\ に exe がありません。
   echo               先に  npm run dist:win  でパッケージを作ってください。
   set /a WARN+=1
+  rem ここへ来たらアプリは起きていない。まとめで「準備完了」と言わせない
+  set "STOP_BEFORE_LAUNCH=1"
   goto :summary
 )
 for %%F in ("%APP_EXE%") do (
@@ -203,6 +217,8 @@ if not exist "%ELECTRON_EXE%" (
     echo               USB から 0_セットアップ.bat をやり直してください。
   )
   set /a WARN+=1
+  rem ここへ来たらアプリは起きていない。まとめで「準備完了」と言わせない
+  set "STOP_BEFORE_LAUNCH=1"
   goto :summary
 )
 if not exist "%~dp0dist\main\main\main.js" (
@@ -213,6 +229,8 @@ if not exist "%~dp0dist\main\main\main.js" (
     echo               コピーが不完全です。USB から 0_セットアップ.bat をやり直してください。
   )
   set /a WARN+=1
+  rem ここへ来たらアプリは起きていない。まとめで「準備完了」と言わせない
+  set "STOP_BEFORE_LAUNCH=1"
   goto :summary
 )
 for %%F in ("%ELECTRON_EXE%") do echo        本体      : %%~fF
@@ -233,7 +251,7 @@ if "!FRESH!"=="OLD" (
 echo.
 
 rem ------------------------------------------------------------
-echo [4/6] ComfyUI（AI画像変換）の確認
+echo [4/7] ComfyUI（AI画像変換）の確認
 set "PROFILE="
 set "BASEURL="
 rem PowerShell 5.1 は BOM 無しの UTF-8 を ANSI と誤解するので -Encoding UTF8 が要る
@@ -325,7 +343,7 @@ goto :wait_comfy
 echo.
 
 rem ------------------------------------------------------------
-echo [5/6] 二重起動の確認
+echo [5/7] 二重起動の確認
 rem ------------------------------------------------------------
 rem  アプリは二重起動を防いでいる（main.ts の requestSingleInstanceLock）。
 rem  そのため**前のプロセスが残っていると、ここで起こしても即座に自滅する**。
@@ -382,7 +400,7 @@ if not defined FOUND_ANY echo        OK : まだ起動していません
 echo.
 
 rem ------------------------------------------------------------
-echo [6/6] アプリの起動
+echo [6/7] アプリの起動
 if defined DRYRUN (
   echo        ＊ 確認のみモードなので起動しません
   goto :launch_done
@@ -398,6 +416,10 @@ if defined ALREADY_LIVE (
   echo        すでに起動していた画面を前に出しました（新しくは開いていません）
   goto :launch_done
 )
+rem 🔴 **新しく起こすときだけ古い印を消す。**
+rem すでに生きている場合（上の分岐）に消してしまうと、アプリは報告済みなので
+rem 二度と書かれず、準備確認が必ず時間切れになる。
+if exist "!READY_FILE!" del /f /q "!READY_FILE!" > nul 2>&1
 (
   if "!LAUNCH_MODE!"=="electron" (
     set "LD_EXE=!ELECTRON_EXE!"
@@ -433,13 +455,97 @@ if defined ALREADY_LIVE (
 :launch_done
 echo.
 
+rem ------------------------------------------------------------
+echo [7/7] 準備確認
+if defined DRYRUN (
+  echo        ＊ 確認のみモードなので確かめません
+  goto :ready_done
+)
+echo        ゲーム画面が出るのを待ちます（最大 %READY_WAIT% 秒）…
+set /a RWAITED=0
+:wait_ready
+if exist "!READY_FILE!" goto :read_ready
+if !RWAITED! GEQ %READY_WAIT% (
+  echo.
+  echo        [警告] %READY_WAIT% 秒待ちましたが、アプリから準備完了の報告がありません。
+  echo               画面が出ているかモニタを見てください。出ていない場合の見どころ:
+  echo                 ・Smart App Control に弾かれていないか
+  echo                   （イベントビューアー ^> Microsoft-Windows-CodeIntegrity/Operational）
+  echo                 ・logs\ready.json が作られない＝画面まで到達していない
+  echo               画面は出ているのにここに来た場合は、カメラの初期化が
+  echo               終わっていない可能性があります（Windows の設定 ^> プライバシー ^> カメラ）。
+  set /a WARN+=1
+  set "READY_NG=1"
+  goto :ready_done
+)
+set /a RWAITED+=2
+< nul set /p "=."
+ping -n 3 127.0.0.1 > nul
+goto :wait_ready
+
+:read_ready
+echo.
+set "RCOUNT="
+set "RWARNS="
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "try{ $r=(Get-Content -Raw -Encoding UTF8 '!READY_FILE!' | ConvertFrom-Json); 'RCOUNT=' + @($r.warnings).Count; 'RSCREEN=' + $r.screen; foreach($w in @($r.warnings)){ 'RWARN=' + $w } }catch{ 'RCOUNT=-1' }"`) do (
+  if /i "%%A"=="RCOUNT" set "RCOUNT=%%B"
+  if /i "%%A"=="RSCREEN" set "RSCREEN=%%B"
+  if /i "%%A"=="RWARN" echo        [警告] %%B
+)
+if "!RCOUNT!"=="-1" (
+  echo        [警告] 準備完了の報告を読めませんでした（logs\ready.json が壊れている）。
+  set /a WARN+=1
+  set "READY_NG=1"
+  goto :ready_done
+)
+echo        OK : ゲーム画面が出ました（表示中: !RSCREEN!）
+if not "!RCOUNT!"=="0" (
+  rem 起動はできたが当日困ることがある（カメラ無し・ComfyUI 落ち・results に書けない）。
+  rem これを黙って通すと、全員ダミー写真のまま開場することになる
+  set /a WARN+=!RCOUNT!
+  set "READY_NG=1"
+)
+
+:ready_done
+echo.
+
 :summary
 echo ============================================================
+rem 「else if」の連鎖は cmd では書き方によって黙って外れるので使わない。
+rem ここを間違えると**起動していないのに「準備完了」と出る**ので goto で分ける。
+if defined DRYRUN goto :sum_dryrun
+if defined STOP_BEFORE_LAUNCH goto :sum_stopped
+if defined READY_NG goto :sum_notready
+if "!WARN!"=="0" goto :sum_ready
+goto :sum_ready_warn
+
+:sum_dryrun
 if "!WARN!"=="0" (
-  echo   点検 : 問題は見つかりませんでした
+  echo   点検 : 問題は見つかりませんでした（確認のみモード。何も起動していません）
 ) else (
-  echo   点検 : 気になる点が !WARN! 件あります（上の [注意] [警告] を確認してください）
+  echo   点検 : 気になる点が !WARN! 件あります（確認のみモード）
 )
+goto :sum_done
+
+:sum_stopped
+echo   ★ 準備できていません。アプリは起動していません。
+echo      上の [中止] を見てください。
+goto :sum_done
+
+:sum_notready
+echo   ★ 準備できていません。上の [警告] を見てください。
+echo      （気になる点 !WARN! 件）
+goto :sum_done
+
+:sum_ready
+echo   ★★★ 準備完了 ★★★  そのまま遊べます
+goto :sum_done
+
+:sum_ready_warn
+echo   ★ 準備完了（ただし気になる点が !WARN! 件あります。上の [注意] を確認）
+goto :sum_done
+
+:sum_done
 echo.
 echo   この黒い画面は閉じてかまいません（アプリと ComfyUI は動き続けます）。
 echo   終了するとき : stop-kidspg.bat を実行してください

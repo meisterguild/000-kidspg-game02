@@ -18,6 +18,8 @@ import { NavBar } from './components/NavBar';
 // 終了確認ダイアログ
 import { ExitConfirmationDialog } from './components/ExitConfirmationDialog';
 import { useExitConfirmation } from './hooks/useExitConfirmation';
+// 起動バッチが「準備完了」を実測で判断するための報告（hooks/useReportReady.ts）
+import { useReportReady } from './hooks/useReportReady';
 
 // 画面のレンダリングと副作用を担当するコンポーネント
 const AppContent: React.FC = () => {
@@ -33,6 +35,10 @@ const AppContent: React.FC = () => {
     handleConfirm,
     handleCancel,
   } = useExitConfirmation();
+
+  // 画面が出てカメラの初期化が決着したら、main へ1回だけ報告する。
+  // main がそれを logs/ready.json に書き、start-kidspg.bat がそれを待つ
+  useReportReady();
 
   // アセット読み込み
   useEffect(() => {

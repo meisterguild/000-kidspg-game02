@@ -146,6 +146,20 @@ const electronAPI = {
   // main.ts の 'request-exit' ハンドラのコメントを参照。
   requestExit: () => ipcRenderer.invoke('request-exit'),
   getComfyUIStatusForExit: () => ipcRenderer.invoke('get-comfyui-status-for-exit'),
+
+  /**
+   * 「画面が出て、カメラの初期化まで終わった」ことを main へ伝える。
+   * main はこれを受けて logs/ready.json を書き、起動バッチがそれを待つ。
+   * 当日「起動バッチを叩いたら準備完了」を推測ではなく実測にするための経路
+   * （詳細は main/services/readiness.ts）。
+   */
+  reportReady: (info: {
+    assetsLoaded: boolean;
+    cameraReady: boolean;
+    usingDummyCamera: boolean;
+    screen: string;
+  }): Promise<{ success: boolean; warnings?: string[]; error?: string }> =>
+    ipcRenderer.invoke('app-ready', info),
   confirmExit: (confirmed: boolean) => ipcRenderer.invoke('confirm-exit', confirmed),
   onShowExitConfirmation: (callback: (comfyUIStatus: ComfyUIStatus) => void) => {
     ipcRenderer.on('show-exit-confirmation', (_, data) => callback(data));

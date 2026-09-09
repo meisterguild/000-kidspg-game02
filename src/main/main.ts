@@ -25,6 +25,14 @@ import {
 } from './services/workflow-template';
 import { resolveComfyUIConfig, type ResolvedComfyUIConfig } from './services/comfyui-config';
 import { launchComfyUI } from './services/comfyui-launcher';
+import {
+  buildReadinessWarnings,
+  checkResultsWritable,
+  clearReadiness,
+  writeReadiness,
+  type ReadinessReport,
+  type RendererReadiness,
+} from './services/readiness';
 import { applyConfigPatch } from './services/config-writer';
 
 /**
@@ -252,6 +260,11 @@ class ElectronApp {
     app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
     
     app.whenReady().then(async () => {
+      // 🔴 **前回の「準備OK」の印を必ず消す。**
+      // 残っていると、今回起動に失敗しても起動バッチが即座に準備完了と言ってしまう。
+      // バッチ側でも消しているが、片方に頼らない（詳細は services/readiness.ts）。
+      await clearReadiness(this.getBundleRoot());
+
       // 設定ファイルを読み込む
       this.config = await this.loadConfig();
 
@@ -314,6 +327,8 @@ class ElectronApp {
       this.armForceExit();
 
       try {
+        // 落ちているのに準備OKの印が残らないようにする
+        await clearReadiness(this.getBundleRoot());
         if (this.comfyUIService) {
           await this.comfyUIService.destroy();
         }
@@ -688,6 +703,53 @@ class ElectronApp {
     });
 
     // 設定情報を取得
+    /**
+     * renderer から「画面が出て、カメラの初期化まで終わった」と報告が来たときに、
+     * main 側の事実（ComfyUI の疎通・results に書けるか）を足して ready.json を書く。
+     *
+     * これが起動バッチの「準備完了」の根拠になる。**アプリを起こしたことと、
+     * 準備できたことは別**で、以前はそこを区別していなかったため、起動に失敗しても
+     * バッチが「問題なし」と表示できてしまっていた。
+     */
+    ipcMain.handle('app-ready', async (event, info: unknown) => {
+      try {
+        const renderer = info as RendererReadiness;
+        const resultsDir = resolveResultsDir();
+        const base: Omit<ReadinessReport, 'warnings'> = {
+          assetsLoaded: !!renderer?.assetsLoaded,
+          cameraReady: !!renderer?.cameraReady,
+          usingDummyCamera: !!renderer?.usingDummyCamera,
+          screen: typeof renderer?.screen === 'string' ? renderer.screen : '(不明)',
+          readyAt: new Date().toISOString(),
+          appVersion: app.getVersion(),
+          packaged: app.isPackaged,
+          pid: process.pid,
+          comfyui: this.comfyUI
+            ? {
+                profile: this.comfyUI.profileName,
+                baseUrl: this.comfyUI.baseUrl,
+                // 疎通は起動時にも見ているが、ここでもう一度見る。
+                // 起動の途中で ComfyUI が落ちた場合に気づけるようにするため
+                healthy: this.comfyUIService ? await this.comfyUIService.healthCheck() : false,
+              }
+            : null,
+          results: { dir: resultsDir, writable: await checkResultsWritable(resultsDir) },
+        };
+        const report: ReadinessReport = { ...base, warnings: buildReadinessWarnings(base) };
+        await writeReadiness(this.getBundleRoot(), report);
+        if (report.warnings.length === 0) {
+          console.log('[準備確認] 準備OK');
+        } else {
+          for (const w of report.warnings) console.warn('[準備確認] ' + w);
+        }
+        return { success: true, warnings: report.warnings };
+      } catch (error) {
+        // 印を書けなくてもゲームは動く。バッチが「確かめられなかった」と言うだけにする
+        console.error('[準備確認] ready.json を書けませんでした:', error);
+        return { success: false, error: String(error) };
+      }
+    });
+
     ipcMain.handle('get-config', () => {
       return this.config;
     });
