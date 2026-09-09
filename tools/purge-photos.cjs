@@ -180,6 +180,37 @@ const main = async () => {
     return;
   }
 
+  // 🔴 **消す前に保守ロックを取る。**
+  // retry-failed が写真を ComfyUI へ上げ直している最中（1枚3分）に、別の人が
+  // このツールを --apply で叩くと、読み込む直前に写真が消えて ENOENT になる。
+  // retry-failed はロックを取るのに、こちらは見ていなかったので防波堤が
+  // 片側しか無かった（敵対的レビュー 2026-09-09 の指摘）。
+  const cardOutputPath = path.join(ROOT, 'dist', 'main', 'main', 'services', 'card-output.js');
+  let releaseLock = null;
+  if (fs.existsSync(cardOutputPath)) {
+    // eslint-disable-next-line global-require
+    const { acquireMaintenanceLock } = require(cardOutputPath);
+    releaseLock = await acquireMaintenanceLock(resultsDir);
+    if (!releaseLock) {
+      console.error('');
+      console.error('[purge] 別のプロセスが results/ を保守中です（アプリの起動時点検や作り直し）。');
+      console.error('        写真を消すのは待ってください。何も消していません。');
+      console.error('        ＊ 誰も動いていないのに出る場合は、アプリを stop-kidspg.bat で止めてから');
+      console.error('          node tools/retry-failed.cjs --force-unlock --apply を一度実行してください');
+      process.exitCode = 1;
+      return;
+    }
+    // Ctrl-C で抜けたときにロックを残さない
+    for (const sig of ['SIGINT', 'SIGTERM']) {
+      process.once(sig, async () => {
+        try { await releaseLock(); } catch { /* 解放できなくても終了する */ }
+        process.exit(130);
+      });
+    }
+  } else {
+    console.error('[purge] dist が無いため保守ロックを取れません。排他なしで続行します');
+  }
+
   console.log('');
   let done = 0;
   let freed = 0;
@@ -210,6 +241,8 @@ const main = async () => {
       console.error(`   ${t.dt} 削除に失敗: ${error.message}`);
     }
   }
+  // 取ったロックは必ず返す（残すとアプリの起動時点検が毎回飛ばされる）
+  if (releaseLock) { try { await releaseLock(); } catch { /* 解放できなくても続ける */ } }
   console.log(`[purge] 完了: ${done} 件 / ${human(freed)} を解放しました`);
   if (done < targets.length) {
     console.log(`[purge] ⚠️ ${targets.length - done} 件は消せませんでした（上のエラーを確認してください）`);
