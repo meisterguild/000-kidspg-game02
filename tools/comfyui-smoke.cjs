@@ -144,6 +144,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * dist が src より古くないかを見る。
  * 検証ツールは dist を require するので、ビルドし忘れると
  * **直したはずの実装が反映されないまま「成功」してしまう**。
+ *
+ * ⚠️ **src/ が無い置き方でも動かないといけない。**
+ * 当日PC へ配る ops/ には tools と dist/main と config.json だけを入れ、
+ * ソースは配らない（配布パッケージの設計は docs/distribution-plan.md）。
+ * 以前はここで src/main を無条件に読んでいたため、当日PC でこのツールを
+ * 走らせると ENOENT で落ちていた——**当日手順書に書いた検証手順そのものが
+ * 通らない**状態だった（2026-09-09 に実測で発覚）。
+ * ソースが無いのは「開発機ではない」ということなので、点検を飛ばす。
  */
 const assertDistFresh = (root) => {
   const fsx = require('fs');
@@ -156,7 +164,12 @@ const assertDistFresh = (root) => {
     }
     return t;
   };
-  const src = newest(pathx.join(root, 'src', 'main'));
+  const srcDir = pathx.join(root, 'src', 'main');
+  if (!fsx.existsSync(srcDir)) {
+    console.log('[smoke] src が無いので dist の新しさは確かめません（配布された ops での実行）');
+    return;
+  }
+  const src = newest(srcDir);
   const dist = newest(pathx.join(root, 'dist', 'main'));
   if (src > dist) {
     throw new Error(
@@ -183,16 +196,31 @@ const main = async () => {
     ? path.resolve(args.workflow)
     : path.join(ROOT, comfy.workflow.templatePath);
   const outDir = args.out ? path.resolve(args.out) : path.join(ROOT, 'tmp', 'smoke');
-  const photoPath = args.photo
-    ? path.resolve(args.photo)
-    : path.join(ROOT, 'src', 'renderer', 'assets', 'images', 'dummy_photo.png');
+  // 既定の写真は**複数の置き場所を試す**。
+  // ⚠️ 当日PC へ配る ops/ には src/ が無い（dist と tools と assets だけ）。
+  // 以前は src 配下だけを見ていたため、当日PC でこのツールを走らせると
+  // 「写真がありません」で止まっていた——**当日手順書に書いた検証手順が
+  // 通らない**状態だった（2026-09-09 に実測で発覚）。
+  const photoCandidates = args.photo
+    ? [path.resolve(args.photo)]
+    : [
+        path.join(ROOT, 'src', 'renderer', 'assets', 'images', 'dummy_photo.png'), // 開発機
+        path.join(ROOT, 'assets', 'dummy_photo.png'),                              // 配布された ops
+      ];
+  const photoPath = photoCandidates.find((p) => fs.existsSync(p)) || photoCandidates[0];
 
   const templateModulePath = path.join(ROOT, 'dist', 'main', 'main', 'services', 'workflow-template.js');
   if (!fs.existsSync(templateModulePath)) {
     throw new Error(`dist が見つかりません。先に \`npm run build\` を実行してください: ${templateModulePath}`);
   }
   assertDistFresh(ROOT);
-  if (!fs.existsSync(photoPath)) throw new Error(`写真がありません: ${photoPath}`);
+  if (!fs.existsSync(photoPath)) {
+    throw new Error(
+      '写真がありません。探した場所:\n  ' +
+        photoCandidates.join('\n  ') +
+        '\n--photo <png> で明示することもできます'
+    );
+  }
   fs.mkdirSync(outDir, { recursive: true });
 
   console.log(`[smoke] baseUrl   : ${baseUrl}`);

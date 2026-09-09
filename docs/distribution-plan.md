@@ -72,9 +72,18 @@ electron-builder が win-unpacked へコピーした自分自身は隣の exe �
 
 #### 埋め込み Python の組み方（開発機で1回だけ）
 
-> ⚠️ **この手順はまだ実行して確かめていません**（2026-09-09 時点）。
-> ComfyUI 公式ポータブルが同じ方式なので通る見込みですが、実際に組んで
-> 1枚生成できることを見たら、この見出しから警告を外してください。
+> ✅ **2026-09-09 に実際に組んで動くことを確かめました。**
+> ComfyUI 0.34.0 が起動し、`/object_info` にモデル4本が載り、生成も通りました。
+> 実測でわかった落とし穴は下の「踏みやすいところ」に全部入れてあります。
+
+**この手順はスクリプトにしてあります**（下の中身は、何をしているかを読むためのもの）。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\onsite\build-materials.ps1
+```
+
+冪等なので、途中で失敗したら直して同じコマンドをもう一度。
+ComfyUI 本体・モデル4本・ImageMagick・Node もまとめて用意します。
 
 作る場所は資材置き場の中（`<materials>/ai/python_embeded`）。
 できたものは**そのままコピーするだけ**なので、当日PCでは何もしません。
@@ -88,11 +97,24 @@ $PY = "$M\ai\python_embeded"
 #    ※ インストーラ（*-amd64.exe）ではなく zip のほう
 Expand-Archive python-3.12.10-embed-amd64.zip -DestinationPath $PY
 
-# 2. site-packages を有効にする
-#    🔴 embeddable 版は既定で site を読まない。ここを直さないと pip で入れたものが
-#    まったく import できず、「pip は成功するのに torch が無い」という状態になる
-(Get-Content "$PY\python312._pth") -replace '^#\s*import site', 'import site' |
-    Set-Content "$PY\python312._pth"
+# 2. _pth を**2箇所**直す（両方必要。2026-09-09 に実測で判明）
+#    (a) `import site` を有効にする
+#        🔴 embeddable 版は既定で site を読まない。直さないと pip で入れたものを
+#        まったく import できず、「pip は成功するのに torch が無い」状態になる。
+#        なお site-packages が sys.path に出るのは pip を入れた**あと**（手順3）。
+#        フォルダが無いうちは site が追加しないので、ここで確認しても出てこない。
+#    (b) `..\ComfyUI` の行を足す
+#        🔴 **_pth を使うと sys.path はその中身だけになる。**
+#        スクリプトのフォルダも cwd も追加されないため、これが無いと main.py の
+#        1行目 `import comfy.options` が ModuleNotFoundError で落ちる（実測）。
+#        相対指定は python.exe のあるフォルダ基準なので、丸ごとコピーしても壊れない。
+$fixed = @()
+foreach ($line in Get-Content "$PY\python312._pth") {
+    if ($line -eq '.') { $fixed += $line; $fixed += '..\ComfyUI' }
+    elseif ($line -match '^#\s*import site') { $fixed += 'import site' }
+    else { $fixed += $line }
+}
+$fixed | Set-Content "$PY\python312._pth" -Encoding ASCII
 
 # 3. pip を入れる（embeddable 版には同梱されていない）
 Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile "$PY\get-pip.py"
@@ -121,7 +143,11 @@ Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile "$PY\get-pip.py"
 
 | | |
 |---|---|
-| `python312._pth` の `import site` | コメントのままだと pip で入れたものを一切 import できない。**手順2を飛ばすと必ず詰む** |
+| `python312._pth` の `import site` | コメントのままだと pip で入れたものを一切 import できない。**手順2(a)を飛ばすと必ず詰む** |
+| `python312._pth` の `..\ComfyUI` | 無いと `import comfy.options` が失敗する。**_pth を使うと sys.path はその中身だけ**で、スクリプトのフォルダも cwd も入らない（2026-09-09 実測） |
+| `robocopy /XD input` | **名前一致**なので深い階層の `comfy_api\input` まで消える。実際にそれで ComfyUI が起動しなくなった。**フルパスで指定する** |
+| ComfyUI の `input/` `output/` | 🔴 検証で使った**実際の子どもの顔写真**とその変換結果が溜まっている（2026-09-09 の時点で 44 件 / 51 件）。**持ち出さない。** 混入は `make-onsite-package.cjs` が機械的に止める |
+| ImageMagick の携帯版 | **配布が無くなっている**（GitHub のリリース資産は Windows 向けはインストーラのみ）。インストール済みフォルダの複製で動く（実測） |
 | `Scripts\*.exe` | embeddable 版では当てにできない。`python.exe -m pip` の形で呼ぶこと |
 | `venv` / `tkinter` | embeddable 版には無い。ComfyUI は使わないので問題ないが、`-m venv` は通らない |
 | torch のサイズ | CPU 版でも約1.9GB。ダウンロードに時間がかかる |
@@ -135,6 +161,36 @@ Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile "$PY\get-pip.py"
 & "$PY\python.exe" "$M\ai\ComfyUI\main.py" --cpu --listen 127.0.0.1 --port 8188 --disable-auto-launch
 # 別の窓で: /system_stats が JSON を返し、/object_info にモデル4本が載っていること
 ```
+
+#### 🔴 Smart App Control は ComfyUI の DLL もブロックする（2026-09-09 実測）
+
+埋め込み Python を組んで最初に ComfyUI を起こしたとき、こうなって落ちました。
+
+```
+ImportError: DLL load failed while importing cython_special:
+  アプリケーション制御ポリシーによってこのファイルはブロックされました。
+```
+
+イベントログ（Microsoft-Windows-CodeIntegrity/Operational）に **ID 3118
+「Smart App Control Block Details」**と ID 3077 / 3033 が残っており、
+`scipy\special\cython_special.cp312-win_amd64.pyd` の読み込みが拒否されていました。
+この開発機の SAC は有効（`VerifiedAndReputablePolicyState = 1`）です。
+
+**そのまま再実行したら通りました。** SAC はクラウドへ評価を問い合わせ、
+**判定が出るまでのあいだ未署名ファイルをブロックする**ためです。
+
+これが当日にとって意味すること:
+
+| | |
+|---|---|
+| 影響範囲 | アプリ（Electron）だけでなく、**ComfyUI が読む未署名の .pyd 群**（scipy・torch など数百個）も対象 |
+| ⚠️ **当日PCはオフライン** | SAC の評価はクラウド問い合わせに依るため、**オフラインだと判定が出ず、ブロックが解けない可能性がある** |
+| いまの緩和策 | `start-comfyui.bat` は落ちても5秒後に上げ直す（オンラインなら判定が出て通る） |
+| 🔴 **推奨** | **当日PCでは Smart App Control をオフにしておく。** 一度オフにすると Windows を入れ直すまで戻せないので、PCの持ち主の判断で**前日までに**行う |
+
+> これは「exe を作らない」判断だけでは避けられない問題です。exe を捨てても、
+> ComfyUI が読む未署名の .pyd は残るためです。
+> **別PCでの検証（オフライン状態で）が必要な最大の理由がこれです。**
 
 ### 3. 場所の書き換えは「当日PC」ではなく「作るとき」にやる
 

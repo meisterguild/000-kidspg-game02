@@ -9,10 +9,22 @@
       "required": true,
       "note": "local プロファイル（CPU実行・SD1.5）用の4本だけ。server 用の SDXL は積まない（2026-09-09 判断）。取得は bash tools/dl-models-local.sh <materials>/ai/models",
       "files": [
-        { "path": "checkpoints/DreamShaper_8_pruned.safetensors", "expectedBytes": 2132625894 },
-        { "path": "vae/sd-vae-ft-mse.safetensors", "expectedBytes": 334643276 },
-        { "path": "controlnet/control_v11p_sd15_canny.safetensors", "expectedBytes": 1445157124 },
-        { "path": "loras/Hyper-SD15-8steps-CFG-lora.safetensors", "expectedBytes": 269127064 }
+        {
+          "path": "checkpoints/DreamShaper_8_pruned.safetensors",
+          "expectedBytes": 2132625894
+        },
+        {
+          "path": "vae/sd-vae-ft-mse.safetensors",
+          "expectedBytes": 334643276
+        },
+        {
+          "path": "controlnet/control_v11p_sd15_canny.safetensors",
+          "expectedBytes": 1445157124
+        },
+        {
+          "path": "loras/Hyper-SD15-8steps-CFG-lora.safetensors",
+          "expectedBytes": 269127064
+        }
       ]
     },
     {
@@ -20,33 +32,48 @@
       "dest": "ai/ComfyUI",
       "kind": "dir",
       "required": true,
-      "note": "ComfyUI 本体（0.34.0 で動作確認）。venv は入れないこと——pyvenv.cfg の home がユーザー名込みの絶対パスを指すため、別PCへコピーすると壊れる。代わりに python_embeded を使う。",
-      "mustContain": ["main.py", "extra_model_paths.yaml"],
-      "mustNotContain": ["venv"]
+      "note": "ComfyUI 本体（0.34.0 で動作確認）。**venv は入れないこと**——pyvenv.cfg の home がユーザー名込みの絶対パスを指すため、別PCへコピーすると壊れる（代わりに python_embeded を使う）。🔴 **input/ と output/ も入れないこと**——検証で使った実際の子どもの顔写真と、そこから作った絵が溜まっている（2026-09-09 の時点で input 44 件・output 51 件）。.git は 82MB あり不要（コミットは C:/WORK/AI/PINNED.md に記録）。",
+      "mustContain": [
+        "main.py",
+        "extra_model_paths.yaml"
+      ],
+      "mustNotContain": [
+        "venv",
+        "input",
+        "output",
+        ".git"
+      ]
     },
     {
       "key": "python_embeded",
       "dest": "ai/python_embeded",
       "kind": "dir",
       "required": true,
-      "note": "埋め込み配布版 Python 3.12（zip 展開のみ・レジストリを触らない）に torch CPU と ComfyUI の依存を入れたもの。ComfyUI 公式ポータブルと同じ方式で、インストール操作なしでコピーして動く。組み方は docs/distribution-plan.md の「埋め込み Python の組み方」（開発機で1回だけ組み、以後はコピーするだけ）。",
-      "mustContain": ["python.exe"]
+      "note": "埋め込み配布版 Python 3.12（zip 展開のみ・レジストリを触らない）に torch CPU と ComfyUI の依存を入れたもの。ComfyUI 公式ポータブルと同じ方式で、インストール操作なしでコピーして動く。**組み方は docs/distribution-plan.md の「埋め込み Python の組み方」**（開発機で1回だけ組み、以後はコピーするだけ）。🔴 python312._pth に ..ComfyUI の行が必要（_pth を使うとスクリプトのフォルダも cwd も sys.path に入らないため、無いと import comfy が失敗する）。",
+      "mustContain": [
+        "python.exe",
+        "python312._pth"
+      ]
     },
     {
       "key": "imagemagick",
       "dest": "bin/ImageMagick",
       "kind": "dir",
       "required": true,
-      "note": "ImageMagick 7 の携帯版（portable Q16 x64 の zip を展開したもの）。https://imagemagick.org/script/download.php#windows 。**これが無いとカードが1枚も出ない**。インストール版でも動くが、当日PCでインストール操作をしない方針なので携帯版を積む。",
-      "mustContain": ["magick.exe"]
+      "note": "ImageMagick 7 のフォルダ一式（magick.exe と DLL）。⚠️ **携帯版 zip の配布は無くなっている**（2026-09-09 に GitHub のリリース資産を確認したところ、Windows 向けはインストーラ .exe のみ）。そのため**開発機にインストール済みのフォルダを複製する**。C:/Program Files/ImageMagick-7.1.2-Q16 から unins000.* を除いてコピーすれば、別の場所でもそのまま動くことを実測で確認済み（PATH を空にして -version / PNG 生成 / Meiryo 参照が通る）。カード合成が検証されている版と同じものを使えるので、こちらのほうが安全。**これが無いとカードが1枚も出ない**。",
+      "mustContain": [
+        "magick.exe"
+      ]
     },
     {
       "key": "node",
       "dest": "ops/node",
       "kind": "dir",
       "required": true,
-      "note": "Node.js の携帯版（node-vXX-win-x64.zip を展開したもの）。https://nodejs.org/en/download/prebuilt-binaries 。当日の救済ツール（再生成・写真削除）を動かすのに使う。",
-      "mustContain": ["node.exe"]
+      "note": "Node.js の携帯版（node-v24.16.0-win-x64.zip の中身）。開発機と同じ版に揃えてある。https://nodejs.org/dist/v24.16.0/ ——SHA256 は同ディレクトリの SHASUMS256.txt と照合すること（2026-09-09 実施: edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56）。当日の救済ツール（再生成・写真削除）を動かすのに使う。",
+      "mustContain": [
+        "node.exe"
+      ]
     },
     {
       "key": "vc_redist",

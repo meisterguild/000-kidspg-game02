@@ -37,6 +37,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const {
   buildOnsitePackageJson,
   collectRuntimeDeps,
+  findForbiddenFiles,
   findUnsatisfiedRequires,
   shouldSkipCardBaseEntry,
   findStrayRendererImages,
@@ -508,6 +509,32 @@ if (unsatisfied.length > 0) {
   );
 }
 say('       OK : dist/main の require はすべて解決できます');
+
+// 🔴 **持ち出してはいけないものが混じっていないか。**
+// 開発機の ComfyUI の input/ には検証で使った実際の顔写真が溜まる
+// （2026-09-09 の時点で 44 件あった）。除外の指定を1つ書き忘れただけで
+// USB に載る。組み立てたあとに機械的に見る（理由は onsite-package-lib.cjs）。
+const allPayloadFiles = [];
+const listFiles = (d) => {
+  for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+    const p = path.join(d, e.name);
+    if (e.isDirectory()) listFiles(p);
+    else if (e.isFile()) allPayloadFiles.push(path.relative(payload, p));
+  }
+};
+listFiles(payload);
+const forbidden = findForbiddenFiles(allPayloadFiles);
+if (forbidden.length > 0) {
+  console.error('\n✗ 持ち出してはいけないものが混じっています:\n');
+  for (const f of forbidden.slice(0, 20)) {
+    console.error('  ・' + f.file + '  … ' + f.why);
+  }
+  if (forbidden.length > 20) console.error('  ほか ' + (forbidden.length - 20) + ' 件');
+  console.error('\n  資材置き場から取り除いてから作り直してください。');
+  console.error('  ComfyUI の input/ と output/ は持ち出しません（顔写真が入っています）。');
+  process.exit(1);
+}
+say('       OK : 顔写真・生成画像・カードは入っていません（' + allPayloadFiles.length + ' ファイル検査）');
 
 const total = dirSize(payload);
 const manifest = {

@@ -151,7 +151,44 @@ const findStrayRendererImages = (imagesDir) => {
   return KNOWN_UNUSED_RENDERER_IMAGES.filter((name) => entries.includes(name));
 };
 
+/**
+ * 🔴 **持ち出してはいけないものが混じっていないか。**
+ *
+ * 開発機の ComfyUI の `input/` には、検証で使った**実際の子どもの顔写真**
+ * （`photo_<日時>.png`）が溜まる。`output/` にはそれを変換した絵が残る。
+ * 2026-09-09 に資材を組んだ時点で input に 44 件・output に 51 件あった。
+ *
+ * これを USB に載せて別PCへ持ち出すのは、この企画でいちばんやってはいけないこと
+ * （カードを後日公開する方針のため、生の顔写真の扱いは特に厳しくしている）。
+ * 除外の指定を1つ書き忘れただけで起きるので、**組み立てたあとに機械的に見る**。
+ *
+ * 名前で見ているだけなので万能ではない。それでも「除外を書き忘れた」という
+ * 現実に起きる事故は確実に捕まえられる。
+ */
+const FORBIDDEN_PAYLOAD_PATTERNS = [
+  { pattern: /^photo_\d{8}_\d{6}\.png$/i, why: '撮影した生の顔写真' },
+  { pattern: /^photo_anime_/i, why: '顔写真から作った AI 画像' },
+  { pattern: /^compare_\d+/i, why: '検証用に顔写真から作った比較画像' },
+  { pattern: /^memorial_card_/i, why: '実在の子どものカード' },
+];
+
+const findForbiddenFiles = (files) => {
+  const hits = [];
+  for (const file of files) {
+    const name = file.split(/[\\/]/).pop();
+    for (const { pattern, why } of FORBIDDEN_PAYLOAD_PATTERNS) {
+      if (pattern.test(name)) {
+        hits.push({ file, why });
+        break;
+      }
+    }
+  }
+  return hits;
+};
+
 module.exports = {
+  findForbiddenFiles,
+  FORBIDDEN_PAYLOAD_PATTERNS,
   buildOnsitePackageJson,
   collectRuntimeDeps,
   findUnsatisfiedRequires,

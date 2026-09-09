@@ -28,6 +28,7 @@ const ROOT = path.resolve(__dirname, '..');
 const {
   buildOnsitePackageJson,
   collectRuntimeDeps,
+  findForbiddenFiles,
   findUnsatisfiedRequires,
   shouldSkipCardBaseEntry,
   findStrayRendererImages,
@@ -210,6 +211,67 @@ test('フォルダが無くても落ちない', () => {
   assert.deepStrictEqual(findStrayRendererImages(path.join(ROOT, 'そんなフォルダは無い')), []);
 });
 
+// -------------------------------------------------- 持ち出してはいけないものの検出
+
+/**
+ * 🔴 開発機の ComfyUI の input/ には検証で使った**実際の子どもの顔写真**が溜まる。
+ * 2026-09-09 に資材を組んだ時点で input 44 件・output 51 件あった。
+ * 除外の指定を1つ書き忘れただけで USB に載るので、組み立て後に機械的に見る。
+ */
+test('顔写真・AI画像・カードは持ち出しとして検出する', () => {
+  const files = [
+    'ai/ComfyUI/input/photo_20260902_100037.png',
+    'ai/ComfyUI/output/photo_anime_20260902_100037_00001_.png',
+    'ai/ComfyUI/input/compare_1788772951157.png',
+    'app/results/20260912_101112/memorial_card_20260912_101112.png',
+  ];
+  const hits = findForbiddenFiles(files);
+  assert.strictEqual(hits.length, 4, '4件すべてを検出できていません');
+  for (const h of hits) assert.ok(h.why && h.why.length > 0, '理由が付いていません');
+});
+
+test('配って良いものを誤検出しない', () => {
+  const ok = [
+    'app/assets/dummy_photo.png',
+    'app/assets/ComfyUI_KidsPG_2026_local.json',
+    'app/card_base_images/bg-card-rank-01-beginner.png',
+    'ai/models/checkpoints/DreamShaper_8_pruned.safetensors',
+    'ai/ComfyUI/comfy_api/input/__init__.py',
+    'bin/ImageMagick/magick.exe',
+  ];
+  assert.deepStrictEqual(findForbiddenFiles(ok), []);
+});
+
+test('作成スクリプトは組み立てたあとに持ち出し検査をする', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'make-onsite-package.cjs'), 'utf8');
+  assert.match(src, /findForbiddenFiles/, '持ち出し検査を呼んでいません');
+  // 検査は組み立てのあと（payload が出来てから）でないと意味がない
+  const buildAt = src.indexOf("step('4/8'");
+  const checkAt = src.indexOf('findForbiddenFiles(allPayloadFiles)');
+  assert.ok(buildAt > 0 && checkAt > buildAt, '検査が組み立てより前にあります');
+});
+
+// ---------------------------------------------- 資材を組むスクリプト
+
+test('資材を組むスクリプトが、実測で踏んだ落とし穴を押さえている', () => {
+  const p = path.join(__dirname, 'onsite', 'build-materials.ps1');
+  assert.ok(fs.existsSync(p), 'build-materials.ps1 がありません');
+  const src = fs.readFileSync(p, 'utf8');
+  // (1)(2) _pth の2箇所。どちらも欠けると ComfyUI が起動しない
+  assert.match(src, /import site/, '_pth の import site を有効にしていません');
+  assert.match(src, /\.\.\\ComfyUI/, '_pth に ..\\ComfyUI を足していません');
+  // (3) /XD は名前一致。フルパスで渡していること（Join-Path で組んでいる）
+  assert.match(src, /Join-Path \$ComfyUISource 'input'/, '/XD をフルパスで指定していません');
+  assert.match(src, /comfy_api\\input/, '/XD の取りこぼしを検出していません');
+  // (4) torch を先に、lock で固定
+  const torchAt = src.indexOf('torch==2.13.0+cpu');
+  const lockAt = src.indexOf('-r $LockFile');
+  assert.ok(torchAt > 0 && lockAt > torchAt, 'torch を lock より後に入れています');
+  assert.match(src, /download\.pytorch\.org\/whl\/cpu/, 'torch を CPU 版で入れていません');
+  // (5) 顔写真を持ち出さない
+  assert.match(src, /photo_\*\.png/, '顔写真の混入を見ていません');
+});
+
 // ---------------------------------------------------------------- bat の作法
 
 /**
@@ -220,7 +282,14 @@ test('フォルダが無くても落ちない', () => {
  * .gitattributes でも固定しているが、書き出す側の事故も拾えるようにする。
  */
 test('当日PC用のスクリプトは CRLF（cmd が LF の bat を解釈できない）', () => {
-  for (const rel of ['tools/onsite/0_setup.bat', 'tools/onsite/verify-copy.ps1', 'start-kidspg.bat', 'stop-kidspg.bat']) {
+  const targets = [
+    'tools/onsite/0_setup.bat',
+    'tools/onsite/verify-copy.ps1',
+    'tools/onsite/build-materials.ps1',
+    'start-kidspg.bat',
+    'stop-kidspg.bat',
+  ];
+  for (const rel of targets) {
     const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     const loneLf = (raw.match(/(?<!\r)\n/g) || []).length;
     assert.strictEqual(loneLf, 0, rel + ' に CR の無い改行が ' + loneLf + ' 個あります');
