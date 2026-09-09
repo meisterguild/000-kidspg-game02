@@ -540,7 +540,7 @@ kidspg-game-2026/
 | `compare-generation.cjs` | 同じ写真・同じシードで生成パラメータだけ変えて画質を見比べる |
 | `e2e-local-play.cjs` | 実アプリを CDP で駆動する通しテスト |
 | `retry-failed.cjs` | 生成に失敗したプレイの救済（A: AI画像の再投入 / B: カード再合成 / C: パス張り直し） |
-| `purge-photos.cjs` | results から**生の顔写真だけ**を消す（既定はドライラン） |
+| `purge-photos.cjs` | results と **ComfyUI の input/output** から生の顔写真を消す（既定はドライラン） |
 | `place-regen-bat.cjs` | 各結果フォルダへ「再生成.bat」を置く（retry-failed の薄いラッパ） |
 | `test-workflow-template.cjs` | ワークフロー置換・「アプリ側との約束」の単体テスト |
 | `test-magick-script.cjs` | ImageMagick スクリプト生成の単体テスト |
@@ -567,6 +567,7 @@ kidspg-game-2026/
 | `onsite/warmup.bat` | 前日までにネット有りで通す暖機（1枚生成 → Smart App Control のブロック件数を報告） |
 | `onsite/check-sac-blocks.ps1` | Smart App Control / Code Integrity のブロックを数える（warmup と起動バッチが呼ぶ） |
 | `lib/resolve-results-dir.cjs` | `results/` の場所を決める判断を1か所に集めたもの（開発機と配布された `ops/` の両方に対応） |
+| `lib/comfyui-scratch.cjs` | ComfyUI の `input/` `output/` を数える・消す（🔴 全員の顔写真が溜まる場所） |
 | `test-onsite-package.cjs` | パッケージの組み立ての決めごとの単体テスト |
 | `test-readiness.cjs` | 「準備完了」の判定と、起動バッチとの取り決めの単体テスト |
 | `notify.sh` | 作業の節目をスマホへ通知（ntfy） |

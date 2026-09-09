@@ -148,6 +148,26 @@ if not defined TOOLDIR (
 
 echo   使う node : %NODEEXE%
 echo.
+
+rem 🔴 **ComfyUI が動いているかを先に見る。** 動いていないと、CPU で数分
+rem    待たされた末に「[失敗] 終了コード N」で終わる。当日その場で1枚
+rem    作り直したい場面で数分を失うのがいちばん困る
+rem    （敵対的レビュー 2026-09-09 の指摘）。待受の確認は1行で書ける。
+netstat -ano -p tcp | findstr /r /c:"127.0.0.1:8188 .*LISTENING" > nul 2>&1
+if errorlevel 1 (
+  echo   [中止] ComfyUI が動いていません（8188 番が待受していません）。
+  echo.
+  echo          先に ComfyUI を起こしてください:
+  echo            ・ふつうは app\start-kidspg.bat が一緒に起こします
+  echo            ・単体で起こすなら ai\ComfyUI\start-comfyui.bat
+  echo          起動には数分かかります（モデルの読み込み）。
+  echo.
+  pause
+  endlocal
+  exit /b 1
+)
+echo   OK : ComfyUI は待受しています（8188 番）
+echo.
 "%NODEEXE%" "%TOOLDIR%\\retry-failed.cjs" --apply --only ${dt}
 set "RC=%errorlevel%"
 echo.

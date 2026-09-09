@@ -35,6 +35,9 @@ const {
   KNOWN_UNUSED_RENDERER_IMAGES,
 } = require('./onsite-package-lib.cjs');
 
+// 追加したテストはライブラリを名前で引くので、パスを1か所に持つ
+const LIB = require.resolve('./onsite-package-lib.cjs');
+
 // ---------------------------------------------------------------- package.json
 
 const samplePkg = () => ({
@@ -606,4 +609,183 @@ test('パッケージの ops には合成実装まで入る', () => {
   // 含まれていなければ、当日カードを作り直せない
   const src = fs.readFileSync(path.join(__dirname, 'make-onsite-package.cjs'), 'utf8');
   assert.match(src, /dist\/main.*opsDir, 'dist\/main'/s, 'ops に dist/main を入れていません');
+});
+// ================================================================
+// 2026-09-09 の敵対的レビュー（パッケージ作成と当日セットアップ）
+// ================================================================
+
+test('生成される start-comfyui.bat は日本語コンソールで読める（chcp と ASCII 先頭）', () => {
+  const { buildStartComfyUIBat } = require(LIB);
+  const bat = buildStartComfyUIBat();
+  const lines = bat.split('\r\n');
+  // 🔴 このバッチの唯一のエラー文（python_embeded が無い）は日本語。
+  //    chcp が無いと CP932 コンソールで化けて、当日の手掛かりが失われる
+  assert.ok(lines.some((l) => l.trim() === 'chcp 65001 > nul'), 'chcp 65001 がありません');
+  const chcpAt = lines.findIndex((l) => l.trim() === 'chcp 65001 > nul');
+  const above = lines.slice(0, chcpAt).join('\n');
+  // eslint-disable-next-line no-control-regex
+  assert.ok(!/[^\x00-\x7F]/.test(above), 'chcp より上に非 ASCII があります: ' + above);
+});
+
+test('生成される start-comfyui.bat の上げ直しには上限がある', () => {
+  const { buildStartComfyUIBat } = require(LIB);
+  const bat = buildStartComfyUIBat();
+  // 8188 番が埋まっていると python は即死するので、上限が無いと
+  // 5秒ごとに torch を読み込み直して CPU とディスクを食い続ける
+  assert.match(bat, /TRYMAX/, '上げ直しの上限がありません');
+  assert.match(bat, /goto loop/, 'ループそのものが無くなっています');
+  assert.match(bat, /giving up/, '諦めたことをログに残していません');
+});
+
+test('生成される start-comfyui.bat は CRLF（cmd が LF を解釈できない）', () => {
+  const { buildStartComfyUIBat } = require(LIB);
+  const bat = buildStartComfyUIBat();
+  assert.strictEqual((bat.match(/(?<!\r)\n/g) || []).length, 0, 'CR の無い改行があります');
+});
+
+test('renderer の画像は「使っているもの以外は全部挙げる」', () => {
+  const { findStrayRendererImages, USED_RENDERER_IMAGES } = require(LIB);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-imgs-'));
+  for (const name of USED_RENDERER_IMAGES) fs.writeFileSync(path.join(dir, name), 'x');
+  assert.deepStrictEqual(findStrayRendererImages(dir), [], '使っているものを挙げています');
+
+  // 🔴 実写を kid.jpg として置くと、名前のパターンには当たらないまま
+  //    dist に載って USB へ出ていた。既知の名前だけを見る作りでは検出できない
+  fs.writeFileSync(path.join(dir, 'kid.jpg'), 'x');
+  assert.deepStrictEqual(
+    findStrayRendererImages(dir),
+    ['kid.jpg'],
+    '知らない画像を挙げていません（実写を置いても素通りします）'
+  );
+});
+
+test('禁じる場所には当日の成果物も入っている', () => {
+  const { findForbiddenFiles } = require(LIB);
+  const hits = findForbiddenFiles([
+    'app/results/20260912_101112/photo_20260912_101112.png',
+    'app/logs/comfyui.log',
+    'app/assets/dummy_photo.png',
+  ]);
+  const files = hits.map((h) => h.file);
+  assert.ok(files.includes('app/results/20260912_101112/photo_20260912_101112.png'), 'results を通しています');
+  assert.ok(files.includes('app/logs/comfyui.log'), 'logs を通しています');
+  assert.ok(!files.includes('app/assets/dummy_photo.png'), '正しい同梱物を弾いています');
+});
+
+test('コピー前の検査はリポジトリ側の素材も見る', () => {
+  const { REPO_SOURCE_DIRS_TO_SCAN } = require(LIB);
+  // 🔴 以前は ComfyUI 配下だけを見ていたので、assets/ に混じった実写は
+  //    6.4GB 書き終えたあとにようやく検出され、しかも消さないので USB に残った
+  for (const dir of ['assets', 'src/renderer/assets/images']) {
+    assert.ok(REPO_SOURCE_DIRS_TO_SCAN.includes(dir), dir + ' を見ていません');
+  }
+  const src = fs.readFileSync(path.join(ROOT, 'tools', 'make-onsite-package.cjs'), 'utf-8');
+  const beforeCopy = src.slice(0, src.indexOf('コピー中 : '));
+  assert.match(beforeCopy, /REPO_SOURCE_DIRS_TO_SCAN/, 'コピー前に見ていません');
+});
+
+test('--no-hash は古い SHA256SUMS を残さない', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'tools', 'make-onsite-package.cjs'), 'utf-8');
+  const noHash = src.slice(src.indexOf('if (NO_HASH) {'), src.indexOf('} else {', src.indexOf('if (NO_HASH) {')));
+  // 残すと「中身は新しいのに目録は古い」状態になり、当日の照合が
+  // 消えない誤警告を出し続け、増えたファイルは検査されない
+  assert.match(noHash, /unlinkSync/, '古い目録を消していません');
+});
+
+test('SHA256SUMS は payload の外（prereq・手順書）も載せる', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'tools', 'make-onsite-package.cjs'), 'utf-8');
+  const hashPart = src.slice(src.indexOf('hashWalk(payload);'));
+  assert.match(hashPart, /prereq/, 'prereq を照合対象にしていません');
+  // VC_redist は唯一インストール操作が要るもの。壊れていたら当日詰む
+});
+
+test('照合はコピー先と USB 側を分けて数える', () => {
+  const ps1 = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'verify-copy.ps1'), 'utf-8');
+  assert.match(ps1, /COPIED=/, 'コピー先の件数を返していません');
+  assert.match(ps1, /MEDIA=/, 'USB 側の件数を返していません');
+  // payload の外は USB 側を起点に見る（コピー先には置かれないので必ず食い違う）
+  assert.match(ps1, /usbRoot/, 'USB 側を起点にしていません');
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', '0_setup.bat'), 'utf-8');
+  assert.match(bat, /HASH_MEDIA/, 'bat 側が USB 側の件数を読んでいません');
+  assert.match(bat, /やり直しても直りません/, '対処の違いを伝えていません');
+});
+
+test('セットアップはモデル4本と Electron 本体を確かめる', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', '0_setup.bat'), 'utf-8');
+  // いちばんコピーが失敗しやすい 4.1GB を1つも見ていなかった
+  for (const m of [
+    'DreamShaper_8_pruned.safetensors',
+    'sd-vae-ft-mse.safetensors',
+    'control_v11p_sd15_canny.safetensors',
+    'Hyper-SD15-8steps-CFG-lora.safetensors',
+  ]) {
+    assert.ok(bat.includes(m), m + ' を確かめていません');
+  }
+  assert.match(bat, /electron\.exe/, 'Electron 本体を確かめていません');
+});
+
+test('セットアップは致命的な欠落があるときに前向きな手順を出さない', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', '0_setup.bat'), 'utf-8');
+  assert.match(bat, /MISSING_CORE/, '致命的な欠落を区別していません');
+  assert.match(bat, /:missing_core/, '欠落時の案内がありません');
+  // 「このあとやること」より前で分岐していること
+  const idxBranch = bat.indexOf('if defined MISSING_CORE goto :missing_core');
+  const idxNext = bat.indexOf('echo   このあとやること');
+  assert.ok(idxBranch > 0 && idxBranch < idxNext, '分岐が手順の後ろにあります');
+});
+
+test('セットアップは当日の config.json を黙って巻き戻さない', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', '0_setup.bat'), 'utf-8');
+  // 設定画面から保存でき、手順書の退避策も config.json を書き換える
+  assert.match(bat, /config\.json\.before-setup/, '退避していません');
+  const idxBackup = bat.indexOf('config.json.before-setup');
+  const idxCopy = bat.indexOf('robocopy "%~dp0payload"');
+  assert.ok(idxBackup > 0 && idxBackup < idxCopy, '上書きの後に退避しています');
+});
+
+test('資材の組み立ては検証で溜まるものを毎回空にする', () => {
+  const ps1 = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'build-materials.ps1'), 'utf-8');
+  // /MIR は /XD で除外したフォルダを消さないので、検証で作られた
+  // user\comfyui.db と temp\ が残り、再実行でも直らなかった
+  assert.match(ps1, /'input', 'output', 'temp', 'user'/, '4つを空にしていません');
+  assert.match(ps1, /Remove-Item -Recurse -Force -LiteralPath \(Join-Path \$dir '\*'\)/, '中身を消していません');
+});
+
+test('顔写真の後始末は ComfyUI の input/output も対象にする', () => {
+  const { resolveComfyUIRoot, listScratchFiles } = require(path.join(ROOT, 'tools', 'lib', 'comfyui-scratch.cjs'));
+  // 🔴 アプリは /upload/image で写真を上げるので、当日PCの ComfyUI に
+  //    参加者全員の生の顔写真が残る。実測（開発機・何度も再起動後）で
+  //    input 44 件・output 51 件。「再起動で消える」は誤りだった
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-comfy-'));
+  fs.mkdirSync(path.join(dir, 'input', '3d'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'output'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'input', 'photo_20260912_101112.png'), 'x');
+  fs.writeFileSync(path.join(dir, 'input', '3d', 'sample.obj'), 'x');
+  fs.writeFileSync(path.join(dir, 'output', 'KidsPG_00001_.png'), 'x');
+
+  const groups = listScratchFiles(dir);
+  const all = groups.flatMap((g) => g.files.map((f) => path.basename(f.path)));
+  assert.ok(all.includes('photo_20260912_101112.png'), '顔写真を見ていません');
+  assert.ok(all.includes('KidsPG_00001_.png'), '生成画像を見ていません');
+  // サブフォルダのサンプルは触らない
+  assert.ok(!all.includes('sample.obj'), 'サブフォルダまで対象にしています');
+
+  // config.json から場所を解決できる
+  const cfg = path.join(dir, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({
+    comfyui: { activeProfile: 'local', profiles: { local: { paths: { root: dir } } } },
+  }));
+  assert.strictEqual(resolveComfyUIRoot(cfg).root, path.resolve(dir));
+});
+
+test('後始末ツールは「input は再起動で消える」と書いていない（事実と違う）', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'tools', 'purge-photos.cjs'), 'utf-8');
+  // 注釈として「以前はそう書いていた」と残すのは正しい。
+  // 事実の説明として残っていないことを見る
+  assert.ok(
+    !/（ComfyUI の input は再起動で消えるため）/.test(src),
+    '事実と違う説明が残っています（実測で残ることを確認済み）'
+  );
+  assert.match(src, /そうなる仕組みはどこにも無い/, '誤りだったことを書き残していません');
+  assert.match(src, /purgeComfyUIScratch/, 'ComfyUI 側の後始末がありません');
 });

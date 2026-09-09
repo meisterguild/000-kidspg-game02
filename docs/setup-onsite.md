@@ -215,6 +215,33 @@ node\node.exe tools\comfyui-smoke.cjs
 
 ---
 
+## 4.5 閉場後の後始末（🔴 顔写真の始末）
+
+**持ち帰る前に必ず実行してください。**
+
+```
+cd C:\kidspg\ops
+node\node.exe tools\purge-photos.cjs            ← まず何を消すか見る（消しません）
+node\node.exe tools\purge-photos.cjs --apply    ← 実際に消す
+```
+
+消すのは2か所です。
+
+| 場所 | 何が溜まるか |
+|---|---|
+| `app\results\<日時>\photo_<日時>.png` | カメラで撮った**そのままの顔写真** |
+| `ai\ComfyUI\input\` と `output\` | 🔴 **参加者全員の顔写真と変換後の絵** |
+
+> 🔴 **2つ目を忘れないでください。** アプリは ComfyUI へ写真を上げて変換するので、
+> `ai\ComfyUI\input\` に生の顔写真が、`output\` に変換後の絵が**そのまま残ります**。
+> フォルダを丸ごとコピーして持ち帰ると、これも一緒に付いてきます。
+> 上のコマンドは results と合わせてここも空にします
+> （残したい場合だけ `--keep-comfyui`）。
+>
+> 残す: `photo_anime_*`（カードの中身。後日の公開物）・`memorial_card_*`・`result.json`
+
+---
+
 ## 5. 当日のトラブル対応
 
 | 症状 | 見るところ |

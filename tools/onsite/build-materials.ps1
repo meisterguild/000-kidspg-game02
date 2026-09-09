@@ -77,8 +77,27 @@ $xd = @(
 ) + @('__pycache__')
 robocopy $ComfyUISource $COMFY /MIR /XD $xd /NFL /NDL /NJH /NJS /R:2 /W:2 | Out-Null
 if ($LASTEXITCODE -ge 8) { Die "robocopy が失敗しました ($LASTEXITCODE)" }
-# ComfyUI は input / output を使うので、空のフォルダだけ用意する
-foreach ($d in @('input', 'output')) { New-Item -ItemType Directory -Force (Join-Path $COMFY $d) | Out-Null }
+# 🔴 **/MIR は /XD で除外したフォルダを走査も削除もしない。**
+# このスクリプトは末尾で「ComfyUI を一度起こして1枚生成できることを必ず確かめろ」と
+# 案内しているが、その通りにすると user\comfyui.db と temp\ が**再生成される**。
+# すると make-onsite-package.cjs の mustBeEmpty 検査が
+# 「user/ に N 件のファイルがあります」で止まり、**このスクリプトを再実行しても
+# 直らない**（/MIR が触らないため）。手で消す以外に復旧手段が無く、
+# 「冪等：すでに出来ているものは飛ばす」という説明と食い違っていた
+# （敵対的レビュー 2026-09-09 の指摘）。
+# 検証で溜まる4つは、複製のあとで**毎回空にする**。
+# ⚠️ 消すのはコピー先（$COMFY）だけ。開発機の ComfyUI 本体は触らない。
+foreach ($d in @('input', 'output', 'temp', 'user')) {
+    $dir = Join-Path $COMFY $d
+    if (Test-Path -LiteralPath $dir) {
+        $stale = @(Get-ChildItem -Recurse -Force -LiteralPath $dir -ErrorAction SilentlyContinue)
+        if ($stale.Count -gt 0) {
+            Say ("       前回の検証で溜まったものを空にします : {0}\  ({1} 件)" -f $d, $stale.Count)
+            Remove-Item -Recurse -Force -LiteralPath (Join-Path $dir '*') -ErrorAction SilentlyContinue
+        }
+    }
+    New-Item -ItemType Directory -Force $dir | Out-Null
+}
 # 落とし穴3 の再発を検出する。comfy_api\input が消えていたら起動しない
 if (-not (Test-Path -LiteralPath (Join-Path $COMFY 'comfy_api\input'))) {
     Die 'comfy_api\input が複製されていません（/XD の名前一致で消えた可能性。フルパス指定を確認）'
@@ -236,6 +255,8 @@ Say ''
 Say ('✓ 資材が揃いました : {0}  合計 {1:N1} GB' -f $Materials, ($s.Sum / 1GB))
 Say ''
 Say '  ⚠️ このあと ComfyUI を一度起こして、1枚生成できることを必ず確かめること。'
+Say '     ＊ そのとき user\comfyui.db と temp\ が作られるが、このスクリプトを'
+Say '        もう一度実行すれば空に戻る（パッケージ作成はそれを求める）。'
 Say '     Smart App Control が有効な機体では、**初回だけ**未署名の .pyd が'
 Say '     ブロックされて落ちることがある（2026-09-09 に実測。再実行で通った）。'
 Say ''

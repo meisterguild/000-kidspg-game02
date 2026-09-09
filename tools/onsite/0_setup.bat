@@ -173,12 +173,40 @@ echo [3/6] コピー
 rem /E   : 空のフォルダも含めて丸ごと。/MIR は使わない
 rem        （出力先を鏡にするので、当日の results\ を消してしまう）
 rem /XD  : results と logs は触らない
+rem 🔴 config.json は**当日書き換わっている可能性がある**。設定画面から
+rem    保存できるうえ、手順書の退避策も「activeProfile を local_light にして
+rem    アプリを再起動」と指示している。/E は同名を上書きするので、
+rem    コピー不良でこのバッチをもう一度走らせると
+rem      ・照合が「app/config.json の食い違い 1 件」を報告して誤誘導し
+rem      ・当日の設定変更を**黙って元に戻す**
+rem    という2つが同時に起きていた（敵対的レビュー 2026-09-09 の指摘）。
+rem    退避してから上書きし、どこに退避したかを必ず言う。
 rem /R:2 /W:2 : USB の一時的な失敗で止まらない程度に再試行する
 if defined DRYRUN (
   echo        ＊ 確認のみモードなのでコピーしません
 ) else (
   echo        %~dp0payload  ==^>  %TARGET%
   echo        （数GBあります。10分ほどかかることがあります）
+  rem 当日の設定を上書きする前に退避する（上の注釈）。
+  rem 中身が同じなら退避しない（毎回ファイルが増えると当日見づらい）。
+  if exist "%TARGET%\app\config.json" (
+    fc /b "%TARGET%\app\config.json" "%~dp0payload\app\config.json" > nul 2>&1
+    if errorlevel 1 (
+      set "CFG_BACKUP=%TARGET%\app\config.json.before-setup"
+      copy /y "%TARGET%\app\config.json" "!CFG_BACKUP!" > nul 2>&1
+      if exist "!CFG_BACKUP!" (
+        echo        ＊ 当日の config.json は書き換わっています。上書きする前に退避しました:
+        echo             !CFG_BACKUP!
+        echo           退避策（activeProfile を local_light 等）を続けたい場合は、
+        echo           このファイルを config.json へ戻してください。
+      ) else (
+        echo        [警告] config.json を退避できませんでした。上書きすると
+        echo               当日の設定変更が失われます。中止して手で控えてください。
+        set "STOP=1"
+        goto :summary
+      )
+    )
+  )
   robocopy "%~dp0payload" "%TARGET%" /E /XD results logs /NFL /NDL /NJH /R:2 /W:2
   rem robocopy は成功でも 0〜7 を返す。8 以上が本当の失敗
   if errorlevel 8 (
@@ -209,20 +237,34 @@ if defined DRYRUN (
 echo        照合中です（数分かかります）…
 rem 照合そのものは別ファイルの PowerShell に任せる。bat の中に長い1行を
 rem 埋めると、入れ子の引用符で「動くのに何も返ってこない」壊れ方をする。
+rem 結果は2つに分かれる（verify-copy.ps1 の注釈）。
+rem   COPIED … コピー先（%TARGET%）の食い違い → 対処は「もう一度実行」
+rem   MEDIA  … USB 側（prereq / bat / 手順書）の食い違い → 対処は「USB を作り直す」
+rem 分けないと、当日「やり直しても直らない」ものに対してやり直しを促してしまう。
 set "HASH_BAD="
-for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify-copy.ps1" -SumFile "%~dp0SHA256SUMS" -Target "%TARGET%"`) do set "HASH_BAD=%%A"
+set "HASH_MEDIA="
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify-copy.ps1" -SumFile "%~dp0SHA256SUMS" -Target "%TARGET%"`) do (
+  if /i "%%A"=="COPIED" set "HASH_BAD=%%B"
+  if /i "%%A"=="MEDIA" set "HASH_MEDIA=%%B"
+)
 if not defined HASH_BAD (
   echo        [注意] 照合を実行できませんでした
   set /a WARN+=1
   goto :hash_done
 )
 if "!HASH_BAD!"=="0" (
-  echo        OK : すべて一致しました
+  echo        OK : コピーはすべて一致しました
 ) else (
   echo        [警告] 食い違い : !HASH_BAD! 件。コピーが不完全か壊れています。
   echo               もう一度このバッチを実行してください。
   set /a WARN+=1
 )
+if not defined HASH_MEDIA goto :hash_done
+if "!HASH_MEDIA!"=="0" goto :hash_done
+echo        [警告] USB 側のファイルが !HASH_MEDIA! 件壊れています
+echo               （prereq\VC_redist.x64.exe・手順書・バッチなど）。
+echo               これは**やり直しても直りません**。USB を作り直してください。
+set /a WARN+=1
 :hash_done
 echo.
 
@@ -248,6 +290,7 @@ if exist "!MAGICK!" (
 ) else (
   echo        [警告] ImageMagick がありません : !MAGICK!
   echo               記念カードが1枚も作られません。
+  set "MISSING_CORE=1"
   set /a WARN+=1
 )
 
@@ -292,6 +335,41 @@ if exist "%TARGET%\ai\ComfyUI\main.py" (
   echo        OK : ComfyUI 本体があります
 ) else (
   echo        [警告] ComfyUI 本体がありません。AI 変換が使えません。
+  set "MISSING_CORE=1"
+  set /a WARN+=1
+)
+
+rem 🔴 **モデル4本（合計 4.1GB）を確かめる。** ここはいちばんコピーが
+rem    失敗しやすいのに、以前は1つも見ていなかった。SHA256SUMS があれば
+rem    拾えるが、無い場合（--no-hash で作った等）は
+rem    「照合を飛ばします」の注意1件だけで通り、
+rem    **当日1枚目の生成で初めて分かる**状態だった
+rem    （敵対的レビュー 2026-09-09 の指摘）。
+set "MODEL_MISSING=0"
+for %%M in (
+  "checkpoints\DreamShaper_8_pruned.safetensors"
+  "vae\sd-vae-ft-mse.safetensors"
+  "controlnet\control_v11p_sd15_canny.safetensors"
+  "loras\Hyper-SD15-8steps-CFG-lora.safetensors"
+) do (
+  if not exist "%TARGET%\ai\models\%%~M" (
+    echo        [警告] モデルがありません : ai\models\%%~M
+    set /a MODEL_MISSING+=1
+  )
+)
+if "!MODEL_MISSING!"=="0" (
+  echo        OK : モデル4本があります
+) else (
+  echo               AI 変換が使えません（カードの絵が全員同じになります）。
+  set /a WARN+=1
+)
+
+if exist "%TARGET%\app\node_modules\electron\dist\electron.exe" (
+  echo        OK : Electron 本体があります
+) else (
+  echo        [警告] Electron 本体がありません : app\node_modules\electron\dist\electron.exe
+  echo               **ゲームが起動しません。**
+  set "MISSING_CORE=1"
   set /a WARN+=1
 )
 echo.
@@ -309,6 +387,14 @@ if defined STOP (
     echo   点検 : 気になる点が !WARN! 件あります（上の [注意] [警告]）。
   )
   echo.
+  rem 🔴 **ゲームが動かない欠落があるときに「このあとやること」を出さない。**
+  rem    以前は ImageMagick / Electron / ComfyUI が全部無くても
+  rem    それぞれ [警告] を出すだけで、まとめは「気になる点が 4 件」と表示し、
+  rem    そのまま「暖機して再起動して ★★★ 準備完了 ★★★ を確かめる」という
+  rem    前向きな手順へ進んでいた（敵対的レビュー 2026-09-09 の指摘）。
+  rem    コピーが部分的に失敗した場合（ウイルス対策のブロックなど、robocopy が
+  rem    8 未満で返るケース）は中止にならないので、ここで受け止める。
+  if defined MISSING_CORE goto :missing_core
   echo   このあとやること
   echo     1. Windows の設定を当日向けにする（1_当日手順書.md の「人がやること」）
   echo        ・カメラのプライバシー設定を ON
@@ -329,6 +415,22 @@ if defined STOP (
   echo        ★★★ 準備完了 ★★★ が出ることを確かめる（これが当日の形）
   echo.
   echo     5. 1プレイ通し、results\^<日時^>\memorial_card_*.png ができれば成功です
+  goto :summary_done
+
+  :missing_core
+  echo   🔴 **このままでは当日ゲームが動きません。**
+  echo      上の [警告] のうち、次のどれかが出ています:
+  echo        ・ImageMagick が無い／起動できない  … 記念カードが1枚も作られません
+  echo        ・Electron 本体が無い              … ゲームが起動しません
+  echo        ・ComfyUI 本体が無い               … AI 変換が使えません
+  echo.
+  echo      やること
+  echo        1. USB がきちんと差さっているか確認し、**もう一度このバッチを実行**する
+  echo        2. それでも直らない場合、ウイルス対策ソフトがコピーを止めていないか見る
+  echo        3. 直らなければ開発機でパッケージを作り直してください
+  echo.
+  echo      ＊ Windows の設定や暖機は、これが直ってから行ってください。
+  :summary_done
 )
 echo ============================================================
 echo.

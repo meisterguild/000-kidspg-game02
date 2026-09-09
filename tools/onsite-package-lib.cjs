@@ -144,6 +144,28 @@ const KNOWN_UNUSED_RENDERER_IMAGES = [
   'sprite_items.xcf',
 ];
 
+/**
+ * 🔴 **いま使っているもの以外は全部「知らないもの」として挙げる。**
+ *
+ * 以前は KNOWN_UNUSED_RENDERER_IMAGES（既知の6つ）が戻っていないかだけを
+ * 見ていた。しかしこのフォルダは「置いてあるだけで dist に載る」性質なので、
+ * **一覧に無い名前は原理的に検出できない**——たとえば画質の詰めのために
+ * 実写の顔を `kid.jpg` として置くと（config.json と README が
+ * 「判断は必ず実写の顔で行うこと」と指示しているので実際に起こりうる）、
+ * `dist/renderer/assets/kid.jpg` として app と ops の両方に載り、
+ * 名前のパターン検査にも1つも当たらないまま USB へ出ていた
+ * （敵対的レビュー 2026-09-09 の指摘）。
+ *
+ * そこで判定を逆にする。**使っているものを列挙し、それ以外を挙げる。**
+ * ここは assets.ts の IMAGE_ASSET_RELATIVE_PATHS と揃えること
+ * （片方だけ増やすと「使っているのに知らないもの扱い」になるが、
+ * その場合も**止まる方向**なので安全側に倒れる）。
+ */
+const USED_RENDERER_IMAGES = [
+  'title_gummy_01.png',
+  'dummy_photo.png',
+];
+
 const findStrayRendererImages = (imagesDir) => {
   let entries;
   try {
@@ -151,7 +173,7 @@ const findStrayRendererImages = (imagesDir) => {
   } catch {
     return [];
   }
-  return KNOWN_UNUSED_RENDERER_IMAGES.filter((name) => entries.includes(name));
+  return entries.filter((name) => !USED_RENDERER_IMAGES.includes(name)).sort();
 };
 
 /**
@@ -193,6 +215,27 @@ const FORBIDDEN_LOCATIONS = [
   { prefix: 'ai/ComfyUI/output', why: 'ComfyUI の output（顔写真から作った絵）' },
   { prefix: 'ai/ComfyUI/temp', why: 'ComfyUI の temp（プレビュー画像が溜まる）' },
   { prefix: 'ai/ComfyUI/user', why: 'ComfyUI の user（開いた画像名の履歴が入る）' },
+  // 当日の成果物。パッケージには絶対に入らない（0_setup も /XD で守っている）
+  { prefix: 'app/results', why: '当日の成果物（顔写真・カードが入る）' },
+  { prefix: 'ops/results', why: '当日の成果物（顔写真・カードが入る）' },
+  { prefix: 'app/logs', why: '当日のログ（ファイル名から写真が辿れる）' },
+];
+
+/**
+ * 素材ではなく**リポジトリ側**にある「これは配ってよいのか」を見る対象。
+ *
+ * 🔴 顔写真の検査が ComfyUI 配下にしか効いていなかった
+ * （敵対的レビュー 2026-09-09 の指摘）。`assets/` や
+ * `src/renderer/assets/images/` へ実写を置くと、payload の
+ * `app/assets`・`ops/assets`・`app/dist` として**6.4GB 書き終えたあと**に
+ * ようやく検出され、しかも消さないので USB 上に残っていた。
+ * コピーする前に、リポジトリ側のこれらを見る。
+ */
+const REPO_SOURCE_DIRS_TO_SCAN = [
+  'assets',
+  'card_base_images',
+  'src/renderer/assets/images',
+  'dist/renderer/assets',
 ];
 
 const findForbiddenFiles = (files) => {
@@ -215,7 +258,115 @@ const findForbiddenFiles = (files) => {
   return hits;
 };
 
+/**
+ * 当日PC 用の start-comfyui.bat の中身を作る。
+ *
+ * ■ なぜここに置くか
+ * 以前は make-onsite-package.cjs の中に文字列の配列として埋め込まれており、
+ * **生成物に対するテストが1本も書けなかった**。実際、
+ *   ・chcp 65001 と ASCII のみのブートストラップが無く、日本語コンソールでは
+ *     唯一のエラーメッセージ（python_embeded が無い）が文字化けする
+ *   ・落ちたら上げ直すループに**上限が無く**、8188 番が埋まっていると
+ *     5秒ごとに torch を読み込み直して CPU とディスクを食い続ける
+ * という2つが、他の bat では守られている決めごとから外れていた
+ * （敵対的レビュー 2026-09-09 の指摘）。関数にして固定する。
+ *
+ * 🔴 戻すのは CRLF の文字列。cmd は LF だけの bat を正しく行分割できない。
+ */
+const buildStartComfyUIBat = () => [
+    '@echo off',
+    'REM ---------------------------------------------------------------',
+    'REM  ASCII-only bootstrap. DO NOT put Japanese text above ":main".',
+    'REM  A Japanese (CP932) console mis-parses this UTF-8 file, and the',
+    'REM  only error message this script has (python_embeded missing)',
+    'REM  becomes unreadable. Same rule as start-kidspg.bat and',
+    'REM  the generated regen bat.',
+    'REM ---------------------------------------------------------------',
+    'chcp 65001 > nul',
+    '',
+    ':main',
+    'REM ============================================================',
+    'REM  KidsPG 2026 用 ComfyUI 起動スクリプト（当日PC / CPU モード）',
+    'REM',
+    'REM  make-onsite-package.cjs が書き出したもの。手で直さないこと',
+    'REM  （作り直すと上書きされる）。',
+    'REM',
+    'REM  ・Python は隣の python_embeded を使う（インストール不要・',
+    'REM    ユーザー名に依存しない）。venv は別PCへコピーすると壊れるため使わない。',
+    'REM  ・出力は logs\\ に落とす。コンソールに垂れ流すと、うっかりウィンドウ内を',
+    'REM    クリックした瞬間に QuickEdit の範囲選択で出力がブロックされ ComfyUI が止まる。',
+    'REM  ・落ちたら自動で上げ直す。落ちてもアプリ側は静かに退避してしまい気づけないため。',
+    'REM',
+    'REM  確認: http://127.0.0.1:8188/system_stats が JSON を返せば起動完了',
+    'REM ============================================================',
+    'setlocal',
+    'cd /d "%~dp0"',
+    'if not exist "logs" mkdir "logs"',
+    '',
+    'REM CPU 実行は全論理コアを食い尽くす。同じPCで動くゲーム(Electron + WebGL)が',
+    'REM カクついて操作不能になるため絞る。',
+    'set OMP_NUM_THREADS=6',
+    '',
+    'REM Python のライブラリが勝手に外へ書くキャッシュを、このフォルダの中へ寄せる。',
+    'REM 当日PCは「1つのフォルダで完結」させる方針（片付けはフォルダを消すだけ、',
+    'REM 持ち帰りは丸ごとコピーだけ、を保つ）。既定では %USERPROFILE%\\.cache 配下に',
+    'REM 作られる。いまのワークフローは手元の safetensors だけを使うので実際には',
+    'REM ほとんど書かれないが、外に出る経路は先に塞いでおく。',
+    'set "HF_HOME=%~dp0..\\cache\\huggingface"',
+    'set "HF_HUB_CACHE=%~dp0..\\cache\\huggingface\\hub"',
+    'set "TRANSFORMERS_CACHE=%~dp0..\\cache\\huggingface\\transformers"',
+    'set "TORCH_HOME=%~dp0..\\cache\\torch"',
+    'set "XDG_CACHE_HOME=%~dp0..\\cache"',
+    'REM 🔴 オフラインで動かす。モデルを探しに外へ出て待たされるのを防ぐ',
+    'set HF_HUB_OFFLINE=1',
+    'set TRANSFORMERS_OFFLINE=1',
+    'if not exist "%~dp0..\\cache" mkdir "%~dp0..\\cache"',
+    '',
+    'set "COMFY_PY=%~dp0..\\python_embeded\\python.exe"',
+    'if not exist "%COMFY_PY%" (',
+    '  echo [ERROR] python_embeded が見つかりません: %COMFY_PY%',
+    '  echo         0_setup.bat をやり直してください。',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    '',
+    'set COMFY_ARGS=--cpu --listen 127.0.0.1 --port 8188 --disable-auto-launch',
+    '',
+    'REM 🔴 上げ直しに上限を付ける。上限が無いと、8188 番が既に埋まっている場合',
+    'REM    （start-kidspg.bat が先に起こしていた／このバッチを二重に叩いた）に',
+    'REM    python が bind に失敗して即死し、**5秒ごとに torch を読み込み直す**。',
+    'REM    CPU を食い続け、ログでディスクを埋め、誰にも通知されない',
+    'REM    （敵対的レビュー 2026-09-09 の指摘）。',
+    'REM    ふつうの運用（落ちたら上げ直す）には 20 回もあれば足りる。',
+    'set /a TRIES=0',
+    'set TRYMAX=20',
+    '',
+    ':loop',
+    'set /a TRIES+=1',
+    'echo [%date% %time%] starting (try %TRIES%/%TRYMAX%): %COMFY_ARGS% >> "logs\\supervisor.log"',
+    '"%COMFY_PY%" main.py %COMFY_ARGS% >> "logs\\comfyui.log" 2>&1',
+    'echo [%date% %time%] exited with %ERRORLEVEL% - restarting in 5s >> "logs\\supervisor.log"',
+    'if %TRIES% GEQ %TRYMAX% (',
+    '  echo [%date% %time%] giving up after %TRIES% tries >> "logs\\supervisor.log"',
+    '  echo.',
+    '  echo   ComfyUI was restarted %TRIES% times and keeps exiting. Giving up.',
+    '  echo   Check logs\\comfyui.log. If port 8188 is already in use,',
+    '  echo   another ComfyUI is running - close this window and use that one.',
+    '  echo.',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    'REM 🔴 timeout は stdin が無いと即エラーで抜ける',
+    'REM    （"ERROR: Input redirection is not supported" / 終了コード 1）。',
+    'REM    アプリ経由でこのバッチを起こすと stdio は NUL なので、待ちが消えて',
+    'REM    1秒に何百回もループし、ログでディスクを埋める。ping で待つ。',
+    'ping -n 6 127.0.0.1 > nul',
+    'goto loop',
+    '',
+].join('\r\n');
+
 module.exports = {
+  buildStartComfyUIBat,
   findForbiddenFiles,
   FORBIDDEN_PAYLOAD_PATTERNS,
   FORBIDDEN_LOCATIONS,
@@ -225,5 +376,7 @@ module.exports = {
   shouldSkipCardBaseEntry,
   findStrayRendererImages,
   KNOWN_UNUSED_RENDERER_IMAGES,
+  USED_RENDERER_IMAGES,
+  REPO_SOURCE_DIRS_TO_SCAN,
   NODE_BUILTINS,
 };

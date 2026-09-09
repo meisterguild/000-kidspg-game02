@@ -41,6 +41,7 @@ const {
   findUnsatisfiedRequires,
   shouldSkipCardBaseEntry,
   findStrayRendererImages,
+  REPO_SOURCE_DIRS_TO_SCAN,
 } = require('./onsite-package-lib.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -161,6 +162,10 @@ if (gitInfo.dirty) {
   say('              このパッケージの中身はコミットから再現できません。');
 }
 
+// 🔴 判定は「使っているもの以外は全部挙げる」に反転してある
+//    （理由は onsite-package-lib.cjs の USED_RENDERER_IMAGES の注釈）。
+//    ここに知らないファイルがあると、参照されていなくても dist に載り、
+//    実写を置いた場合は名前のパターンにも当たらないまま USB へ出る。
 const stray = findStrayRendererImages(path.join(ROOT, 'src/renderer/assets/images'));
 if (stray.length > 0) {
   say('       [注意] 参照されていない画像が src/renderer/assets/images に戻っています:');
@@ -260,6 +265,15 @@ if (APP_ONLY) {
   };
   // 見るのは ComfyUI の下だけでよい（モデルと python_embeded に写真は入らない）
   listMaterialFiles(path.join(MATERIALS, 'ai/ComfyUI'), 'ai/ComfyUI');
+  // 🔴 **リポジトリ側の素材もここで見る。** 以前は ComfyUI 配下しか見ておらず、
+  //    assets/ や src/renderer/assets/images/ に混じった実写は
+  //    **6.4GB 書き終えたあと**にようやく検出され、しかも消さないので
+  //    USB 上に残っていた（敵対的レビュー 2026-09-09 の指摘）。
+  //    config.json と README は「画質の判断は必ず実写の顔で行うこと」と
+  //    指示しているので、実写を置く動機が現実にある。
+  for (const relDir of REPO_SOURCE_DIRS_TO_SCAN) {
+    listMaterialFiles(path.join(ROOT, relDir), relDir);
+  }
   const materialForbidden = findForbiddenFiles(materialFiles);
   for (const f of materialForbidden.slice(0, 10)) {
     problems.push({
@@ -482,67 +496,7 @@ if (!APP_ONLY) {
 
   // start-comfyui.bat を埋め込み Python 向けに置き換える。
   // 資材側の bat は venv を前提にしているので、そのまま配ると当日動かない。
-  const startBat = [
-    '@echo off',
-    'REM ============================================================',
-    'REM  KidsPG 2026 用 ComfyUI 起動スクリプト（当日PC / CPU モード）',
-    'REM',
-    'REM  make-onsite-package.cjs が書き出したもの。手で直さないこと',
-    'REM  （作り直すと上書きされる）。',
-    'REM',
-    'REM  ・Python は隣の python_embeded を使う（インストール不要・',
-    'REM    ユーザー名に依存しない）。venv は別PCへコピーすると壊れるため使わない。',
-    'REM  ・出力は logs\\ に落とす。コンソールに垂れ流すと、うっかりウィンドウ内を',
-    'REM    クリックした瞬間に QuickEdit の範囲選択で出力がブロックされ ComfyUI が止まる。',
-    'REM  ・落ちたら自動で上げ直す。落ちてもアプリ側は静かに退避してしまい気づけないため。',
-    'REM',
-    'REM  確認: http://127.0.0.1:8188/system_stats が JSON を返せば起動完了',
-    'REM ============================================================',
-    'setlocal',
-    'cd /d "%~dp0"',
-    'if not exist "logs" mkdir "logs"',
-    '',
-    'REM CPU 実行は全論理コアを食い尽くす。同じPCで動くゲーム(Electron + WebGL)が',
-    'REM カクついて操作不能になるため絞る。',
-    'set OMP_NUM_THREADS=6',
-    '',
-    'REM Python のライブラリが勝手に外へ書くキャッシュを、このフォルダの中へ寄せる。',
-    'REM 当日PCは「1つのフォルダで完結」させる方針（片付けはフォルダを消すだけ、',
-    'REM 持ち帰りは丸ごとコピーだけ、を保つ）。既定では %USERPROFILE%\\.cache 配下に',
-    'REM 作られる。いまのワークフローは手元の safetensors だけを使うので実際には',
-    'REM ほとんど書かれないが、外に出る経路は先に塞いでおく。',
-    'set "HF_HOME=%~dp0..\\cache\\huggingface"',
-    'set "HF_HUB_CACHE=%~dp0..\\cache\\huggingface\\hub"',
-    'set "TRANSFORMERS_CACHE=%~dp0..\\cache\\huggingface\\transformers"',
-    'set "TORCH_HOME=%~dp0..\\cache\\torch"',
-    'set "XDG_CACHE_HOME=%~dp0..\\cache"',
-    'REM 🔴 オフラインで動かす。モデルを探しに外へ出て待たされるのを防ぐ',
-    'set HF_HUB_OFFLINE=1',
-    'set TRANSFORMERS_OFFLINE=1',
-    'if not exist "%~dp0..\\cache" mkdir "%~dp0..\\cache"',
-    '',
-    'set "COMFY_PY=%~dp0..\\python_embeded\\python.exe"',
-    'if not exist "%COMFY_PY%" (',
-    '  echo [ERROR] python_embeded が見つかりません: %COMFY_PY%',
-    '  echo         0_setup.bat をやり直してください。',
-    '  pause',
-    '  exit /b 1',
-    ')',
-    '',
-    'set COMFY_ARGS=--cpu --listen 127.0.0.1 --port 8188 --disable-auto-launch',
-    '',
-    ':loop',
-    'echo [%date% %time%] starting: %COMFY_ARGS% >> "logs\\supervisor.log"',
-    '"%COMFY_PY%" main.py %COMFY_ARGS% >> "logs\\comfyui.log" 2>&1',
-    'echo [%date% %time%] exited with %ERRORLEVEL% - restarting in 5s >> "logs\\supervisor.log"',
-    'REM 🔴 timeout は stdin が無いと即エラーで抜ける',
-    'REM    （"ERROR: Input redirection is not supported" / 終了コード 1）。',
-    'REM    アプリ経由でこのバッチを起こすと stdio は NUL なので、待ちが消えて',
-    'REM    1秒に何百回もループし、ログでディスクを埋める。ping で待つ。',
-    'ping -n 6 127.0.0.1 > nul',
-    'goto loop',
-    '',
-  ].join('\r\n');
+  const startBat = buildStartComfyUIBat();
   fs.writeFileSync(path.join(payload, 'ai', 'ComfyUI', 'start-comfyui.bat'), startBat);
   say('       start-comfyui.bat : 埋め込み Python（../python_embeded）向けに書き出しました');
 }
@@ -642,7 +596,20 @@ fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, nu
 say('       payload 合計 : ' + mb(total.bytes) + ' / ' + total.files + ' ファイル');
 
 if (NO_HASH) {
-  say('       ＊ --no-hash なので SHA256SUMS は作りません');
+  // 🔴 **古い目録を残さない。** 同じ USB へ1回フルで作り（SHA256SUMS 生成）、
+  //    そのあと --no-hash で作り直すと、**中身は新しいのに目録は古い**まま残る。
+  //    当日 0_セットアップ.bat はそれを読んで照合し
+  //    「食い違い : N 件。コピーが不完全か壊れています」と表示する——
+  //    何度実行しても消えない誤警告になる。逆に新しく増えたファイルは
+  //    古い目録に載っていないので**検査されない**
+  //    （敵対的レビュー 2026-09-09 の指摘）。
+  const stale = path.join(outDir, 'SHA256SUMS');
+  if (fs.existsSync(stale)) {
+    fs.unlinkSync(stale);
+    say('       ＊ --no-hash なので SHA256SUMS は作りません（古い目録は消しました）');
+  } else {
+    say('       ＊ --no-hash なので SHA256SUMS は作りません');
+  }
 } else {
   say('       SHA256SUMS を作ります（コピー漏れと破損の検出用。数分かかります）…');
   const lines = [];
@@ -660,8 +627,25 @@ if (NO_HASH) {
     }
   };
   hashWalk(payload);
+  // 🔴 **payload の外も載せる。** prereq\VC_redist.x64.exe は
+  //    唯一インストール操作が要るもので、VC++ が無い機体で壊れた
+  //    インストーラを渡されるのがいちばん困る。0_セットアップ.bat・
+  //    verify-copy.ps1・手順書も、壊れていれば当日その場で詰む。
+  //    以前は payload しか見ていなかった（敵対的レビュー 2026-09-09 の指摘）。
+  const extraTargets = ['prereq'];
+  for (const rel of extraTargets) {
+    const dir = path.join(outDir, rel);
+    if (fs.existsSync(dir)) hashWalk(dir);
+  }
+  for (const e of fs.readdirSync(outDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    // ルート直下のファイル（bat / ps1 / 手順書 / manifest）。SHA256SUMS 自身は除く
+    if (!e.isFile() || e.name === 'SHA256SUMS') continue;
+    const f = path.join(outDir, e.name);
+    const h = crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+    lines.push(h + '  ' + e.name);
+  }
   fs.writeFileSync(path.join(outDir, 'SHA256SUMS'), lines.join('\n') + '\n');
-  say('       OK : ' + lines.length + ' ファイル分');
+  say('       OK : ' + lines.length + ' ファイル分（payload ＋ prereq ＋ ルート直下）');
 }
 
 console.log('\n✓ できました: ' + outDir);

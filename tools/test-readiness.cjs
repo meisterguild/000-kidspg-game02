@@ -399,12 +399,15 @@ test('起動バッチは ImageMagick の一時ファイルもフォルダ内へ�
 });
 
 test('生成する start-comfyui.bat は Python のキャッシュもフォルダ内へ向ける', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'tools/make-onsite-package.cjs'), 'utf8');
+  // 組み立ては tools/onsite-package-lib.cjs へ移した（生成物にテストを書けるように）。
+  // ソースの文字列ではなく**生成されたバッチ**を見る
+  const { buildStartComfyUIBat } = require(path.join(ROOT, 'tools', 'onsite-package-lib.cjs'));
+  const bat = buildStartComfyUIBat();
   for (const name of ['HF_HOME', 'TORCH_HOME', 'XDG_CACHE_HOME']) {
-    assert.ok(src.includes(name), name + ' を設定していません');
+    assert.ok(bat.includes(name), name + ' を設定していません');
   }
   // 当日はオフライン。外へ探しに行って待たされないように
-  assert.ok(src.includes('HF_HUB_OFFLINE=1'), 'オフライン指定がありません');
+  assert.ok(bat.includes('HF_HUB_OFFLINE=1'), 'オフライン指定がありません');
 });
 // ================================================================
 // 当日運用スクリプトの取り決め（2026-09-09 の敵対的レビューで見つかった経路）

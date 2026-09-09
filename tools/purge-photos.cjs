@@ -17,8 +17,8 @@
  *
  * ■ 🔴 消すと AI 画像の再生成ができなくなる
  * tools/retry-failed.cjs のパターンA（AI画像が無い回の作り直し）は、
- * **毎回この写真を ComfyUI へ上げ直す**（ComfyUI の input は再起動で消えるため）。
- * 写真を消した回は、あとから AI 画像を作り直せない。
+ * **毎回この写真を ComfyUI へ上げ直す**。写真を消した回は、あとから
+ * AI 画像を作り直せない。
  * そのため既定では「カードが完成している回」だけを対象にする。
  * 未完成の回まで消したいときだけ --include-incomplete を付ける。
  *
@@ -26,6 +26,18 @@
  *   ・既定はドライラン。--apply を付けたときだけ消す
  *   ・カードの完成を PNG の中身まで見て確かめる（png-integrity）
  *   ・result.json が写真を指している場合は参照も外す（実体の無いパスを残さない）
+ *
+ * ■ ComfyUI 側にも同じ写真が残る（2026-09-09 の敵対的レビューで発覚）
+ * 🔴 アプリは `/upload/image` で写真を上げるので `<ComfyUI>\input\` に
+ * **参加した子ども全員の生の顔写真**が、ワークフローの SaveImage により
+ * `<ComfyUI>\output\` に変換後の絵が溜まる。ここは誰も消していなかった。
+ * 以前この説明は「ComfyUI の input は再起動で消えるため」と書いていたが、
+ * **そうなる仕組みはどこにも無い**（実測: 何度も再起動した開発機で
+ * input 44 件・output 51 件が残っていた）。つまり results の写真を消しても
+ * 同じ写真の完全なコピーが残る状態だった。
+ * このツールは results と合わせて**そこも消す**。判断は
+ * tools/lib/comfyui-scratch.cjs（トップレベルの input/ output/ のファイルだけ）。
+ * 触りたくない場合は `--keep-comfyui` を付ける。
  */
 
 'use strict';
@@ -36,6 +48,7 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const { resolveResultsDir, describeMissing } = require('./lib/resolve-results-dir.cjs');
+const { resolveComfyUIRoot, listScratchFiles } = require('./lib/comfyui-scratch.cjs');
 
 const argv = process.argv.slice(2);
 const has = (name) => argv.includes(`--${name}`);
@@ -66,6 +79,7 @@ const flag = (name, { pattern, example } = {}) => {
 const APPLY = has('apply');
 const INCLUDE_INCOMPLETE = has('include-incomplete');
 const INCLUDE_UNVERIFIED = has('include-unverified');
+const KEEP_COMFYUI = has('keep-comfyui');
 const ONLY = flag('only', { pattern: /^\d{8}_\d{6}$/, example: '20260912_101112' });
 
 if (flagErrors.length > 0) {
@@ -177,6 +191,8 @@ const main = async () => {
   if (!APPLY) {
     console.log('');
     console.log('[purge] ドライランなので何も消していません。消すには --apply を付けてください');
+    // ドライランでも ComfyUI 側の件数は見せる（何が残っているかを知るため）
+    await purgeComfyUIScratch();
     return;
   }
 
@@ -246,6 +262,71 @@ const main = async () => {
   console.log(`[purge] 完了: ${done} 件 / ${human(freed)} を解放しました`);
   if (done < targets.length) {
     console.log(`[purge] ⚠️ ${targets.length - done} 件は消せませんでした（上のエラーを確認してください）`);
+  }
+
+  await purgeComfyUIScratch();
+};
+
+/**
+ * ComfyUI の作業用の置き場（input/ output/）を空にする。
+ * 🔴 results を消しても**ここに同じ顔写真の完全なコピーが残る**ため、
+ * 個人情報の始末としては必須（上の注釈を参照）。
+ */
+const purgeComfyUIScratch = async () => {
+  console.log('');
+  if (KEEP_COMFYUI) {
+    console.log('[purge] ComfyUI の input/output は --keep-comfyui が指定されたので触りません');
+    console.log('        🔴 生の顔写真が残ります。持ち帰る前に必ず消してください');
+    return;
+  }
+
+  // config.json は app 側にある（配布形では ops から実行するため隣を見る）
+  const candidates = [
+    path.join(ROOT, 'config.json'),
+    path.join(ROOT, '..', 'app', 'config.json'),
+  ];
+  const configPath = candidates.find((c) => fs.existsSync(c));
+  if (!configPath) {
+    console.log('[purge] ComfyUI の場所が分かりません（config.json が見つかりません）。探した場所:');
+    for (const c of candidates) console.log('        ' + c);
+    return;
+  }
+  const { root, from } = resolveComfyUIRoot(configPath);
+  if (!root) {
+    console.log(`[purge] ComfyUI の場所が分かりません（${from}）。input/output は触りません`);
+    console.log('        🔴 AI 変換を使っていた場合、生の顔写真が残っている可能性があります');
+    return;
+  }
+
+  const groups = listScratchFiles(root);
+  const all = groups.flatMap((g) => g.files);
+  console.log(`[purge] ComfyUI の作業用の置き場 : ${root}  (${from})`);
+  for (const g of groups) {
+    console.log(`        ${path.basename(g.dir)}\\ : ${g.files.length} 件 / ${human(g.files.reduce((a, f) => a + f.size, 0))}`);
+  }
+  if (all.length === 0) {
+    console.log('        すでに空です');
+    return;
+  }
+  if (!APPLY) {
+    console.log('        ドライランなので消していません（--apply を付けてください）');
+    return;
+  }
+
+  let removed = 0;
+  let bytes = 0;
+  for (const f of all) {
+    try {
+      await fsp.unlink(f.path);
+      removed += 1;
+      bytes += f.size;
+    } catch (error) {
+      console.error(`        削除に失敗: ${f.path} (${error.message})`);
+    }
+  }
+  console.log(`        消しました: ${removed} 件 / ${human(bytes)}`);
+  if (removed < all.length) {
+    console.log(`        ⚠️ ${all.length - removed} 件は消せませんでした（ComfyUI が使用中かもしれません）`);
   }
 };
 
