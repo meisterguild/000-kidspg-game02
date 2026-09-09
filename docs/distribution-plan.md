@@ -48,6 +48,10 @@ electron-builder が win-unpacked へコピーした自分自身は隣の exe �
 
 `venv/pyvenv.cfg` の `home` が `C:\Users\owner\AppData\Local\Programs\Python\Python312`
 を指している。**ユーザー名が違うPCへコピーすると壊れる。**
+これは新しい発見ではなく、`C:\WORK\AI\PINNED.md` に
+「venv は絶対パスが焼かれるのでコピーせず必ず作り直す」「models はファイルコピーで
+移せる。venv は移せない」と既に書かれている。ここでの判断は、**作り直しを
+当日PCでやらせない**（＝インストール操作をしない）ための方式変更。
 
 そこで ComfyUI 公式ポータブル版と同じ方式にする。
 
@@ -99,7 +103,13 @@ Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile "$PY\get-pip.py"
     --index-url https://download.pytorch.org/whl/cpu
 
 # 5. ComfyUI の依存
-& "$PY\python.exe" -m pip install -r "$M\ai\ComfyUI\requirements.txt"
+#    🔴 **requirements.txt ではなく requirements.lock.txt を使う。**
+#    lock は開発機で動作確認した 86 パッケージの pip freeze（版が全部固定されている）。
+#    requirements.txt（37行・版が緩い）だと、そのとき解決された版が入り、
+#    「開発機では動いたのに当日PCでは違う版」になる。
+#    ⚠️ **torch より後に入れること。** 先に requirements を入れると、その中の
+#    torch 指定が PyPI 版で torch を上書きしてしまう（C:\WORK\AI\PINNED.md の注記）。
+& "$PY\python.exe" -m pip install -r C:\WORK\AI\requirements.lock.txt
 
 # 6. 確かめる
 & "$PY\python.exe" -c "import torch, torchvision; print(torch.__version__, torch.cuda.is_available())"
@@ -116,7 +126,8 @@ Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile "$PY\get-pip.py"
 | `venv` / `tkinter` | embeddable 版には無い。ComfyUI は使わないので問題ないが、`-m venv` は通らない |
 | torch のサイズ | CPU 版でも約1.9GB。ダウンロードに時間がかかる |
 | VC++ ランタイム | torch が要求する。当日PCで無い場合だけインストールが要る（唯一の例外） |
-| 版を固定する | Python も torch も版を控えて `docs/comfyui-local-setup.md` の PINNED と揃えること。**当日PCで pip は使えない**ので、後から差分を埋められない |
+| 版を固定する | `C:\WORK\AI\requirements.lock.txt`（86 パッケージ・pip freeze 実測）と `C:\WORK\AI\PINNED.md` が正。**当日PCで pip は使えない**ので、後から差分を埋められない |
+| 動作確認済みの版 | Python 3.12.10 / torch 2.13.0+cpu / ComfyUI コミット 3216c62e（v0.34.0 + 21commit）。開発機の venv で実測した組み合わせ |
 
 最後に、資材置き場のまま ComfyUI を起こして通しを確かめる。
 
