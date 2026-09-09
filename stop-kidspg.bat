@@ -52,10 +52,16 @@ rem        「残っています」と出続ける（誤った失敗報告）
 rem    start-kidspg.bat は同じ欠陥をフルパス照合に直してあるのに、こちらだけ
 rem    直っていなかった（敵対的レビュー 2026-09-09 の指摘）。フルパスで照合する。
 for %%I in ("%~dp0.") do set "APPDIR=%%~fI"
-rem このバッチ（cmd.exe）自身の PID。照会から外すために使う
-set "SELFPID=0"
-for /f "usebackq tokens=*" %%A in (`powershell -NoProfile -Command "try{ (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId }catch{ 0 }"`) do set "SELFPID=%%A"
-if not defined SELFPID set "SELFPID=0"
+rem 🔴 **自己除外は「照会プロセスを外す」でやる。**
+rem    以前ここで `$PID` の親を取って SELFPID にしていたが、`for /f` の
+rem    バッククォートは cmd.exe /c powershell … を挟むので `$PID` の親は
+rem    **その一時 cmd.exe** で、取得直後には既に消えている（実測）。
+rem    「自分の PID とその親も外す」は成立していなかった。
+rem    実際に効いているのは条件側の `-notlike '*Win32_Process*'`——
+rem    照会に使う PowerShell のコマンド行には必ずこの語が載るので、
+rem    条件に 'start-comfyui' のような文字列を入れても自分に一致しない。
+rem    ⚠️ PID を数字で外す形は、再利用された PID が実対象に当たると
+rem    **黙って落とさず、残存確認も同じ条件なので「なし」と誤報する**ので使わない。
 rem 表示用（人が読む見出しだけに使う）
 for %%I in ("%~dp0.") do set "PROJ=%%~nxI"
 
@@ -135,7 +141,7 @@ rem    「止め切ったのに残っていると出る」「残っているの�
 set "PYCOND= -or ($_.Name -eq 'python.exe' -and $_.CommandLine -like '*ComfyUI*main.py*') -or (($_.Name -eq 'cmd.exe' -or $_.Name -eq 'powershell.exe') -and $_.CommandLine -like '*start-comfyui*')"
 if defined KEEPCOMFY set "PYCOND="
 set "LEFT="
-for /f "usebackq tokens=*" %%L in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { ($_.Name -like 'KidsPG*' -or $_.ExecutablePath -like '*win-unpacked*'%PYCOND% -or $_.Name -eq 'magick.exe' -or (($_.Name -eq 'electron.exe' -or $_.Name -eq 'node.exe') -and $_.CommandLine -like '*%APPDIR%*')) -and $_.CommandLine -notlike '*Win32_Process*' -and $_.ProcessId -ne %SELFPID% } | ForEach-Object { $_.Name + '  PID=' + $_.ProcessId }"`) do (
+for /f "usebackq tokens=*" %%L in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { ($_.Name -like 'KidsPG*' -or $_.ExecutablePath -like '*win-unpacked*'%PYCOND% -or $_.Name -eq 'magick.exe' -or (($_.Name -eq 'electron.exe' -or $_.Name -eq 'node.exe') -and $_.CommandLine -like '*%APPDIR%*')) -and $_.CommandLine -notlike '*Win32_Process*' } | ForEach-Object { $_.Name + '  PID=' + $_.ProcessId }"`) do (
   set "LEFT=1"
   echo        残っています : %%L
 )
@@ -166,7 +172,7 @@ rem    **自分が一致する**（2026-09-09 に実測。確認側が「残っ�
 rem    powershell.exe」を永久に出し、停止側は自分を taskkill しかけた）。
 rem    照会プロセスは必ず Win32_Process を含むので、それで外す。
 rem    自分の PID とその親も念のため外す。
-for /f "usebackq tokens=*" %%P in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { (%FILTER%) -and $_.CommandLine -notlike '*Win32_Process*' -and $_.ProcessId -ne %SELFPID% } | ForEach-Object { $_.ProcessId }"`) do set "PIDS=!PIDS! %%P"
+for /f "usebackq tokens=*" %%P in (`powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { (%FILTER%) -and $_.CommandLine -notlike '*Win32_Process*' } | ForEach-Object { $_.ProcessId }"`) do set "PIDS=!PIDS! %%P"
 if not defined PIDS (
   echo        なし
   exit /b 0

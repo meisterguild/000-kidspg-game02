@@ -348,9 +348,27 @@ rem    しかも表示は「AIサーバー側の ComfyUI が動いているか�
 rem    という無関係な誘導になっていた（敵対的レビュー 2026-09-09 の指摘）。
 rem    activeProfile の綴り間違いや JSON 読み取り失敗（fumei）でも同じ枝に落ちる。
 rem    見るのは**事実**——baseUrl がこのPCを指していて、root が分かっているか。
+rem 🔴 **ポートまで見る。** ホスト名だけを見ていると、config.json が
+rem    :8189 を指していても「ローカルだ」と判断して**8188 を起こし**、
+rem    8188 の待受を見て「OK」と表示し、アプリだけが繋がらない——という
+rem    見つけにくい壊れ方になる（このバッチの %COMFY_PORT%、生成される
+rem    start-comfyui.bat の --port、再生成.bat の3か所に 8188 が書かれており、
+rem    config.json とずれる余地がある。敵対的レビュー 2026-09-09 の指摘）。
 set "COMFY_IS_LOCAL="
-echo !BASEURL! | findstr /i /c:"//127.0.0.1:" /c:"//localhost:" /c:"//[::1]:" > nul 2>&1
+echo !BASEURL! | findstr /i /c:"//127.0.0.1:%COMFY_PORT%" /c:"//localhost:%COMFY_PORT%" /c:"//[::1]:%COMFY_PORT%" > nul 2>&1
 if not errorlevel 1 if defined CFG_ROOT set "COMFY_IS_LOCAL=1"
+rem ホストはこのPCなのにポートが違う場合は、黙って別のポートを起こさない
+if not defined COMFY_IS_LOCAL (
+  echo !BASEURL! | findstr /i /c:"//127.0.0.1:" /c:"//localhost:" /c:"//[::1]:" > nul 2>&1
+  if not errorlevel 1 (
+    echo        [警告] config.json の baseUrl はこのPCを指していますが、
+    echo               ポートが %COMFY_PORT% 番ではありません : !BASEURL!
+    echo               このバッチは %COMFY_PORT% 番でしか起こせません。
+    echo               config.json を %COMFY_PORT% 番に合わせてください。
+    set /a WARN+=1
+    goto :comfy_done
+  )
+)
 
 call :is_port_open
 if "!PORT_OPEN!"=="1" (

@@ -61,6 +61,19 @@ foreach ($d in @($Materials, (Join-Path $Materials 'ai'), (Join-Path $Materials 
 
 # ------------------------------------------------------------------ ComfyUI 本体
 Step 'ComfyUI 本体を複製する（venv と顔写真は除く）'
+# 🔴 **複製元と複製先が同じ／入れ子でないことを先に確かめる。**
+# 下で /MIR を使い、さらに input/output/temp/user を空にするので、
+# 取り違えると**開発機の ComfyUI 本体を壊す**。既定値では安全だが、
+# -Materials や -ComfyUISource を渡して使う道具なので明示的に止める。
+$srcFull = [IO.Path]::GetFullPath($ComfyUISource).TrimEnd('\')
+$dstFull = [IO.Path]::GetFullPath($COMFY).TrimEnd('\')
+if ($srcFull -ieq $dstFull) { Die "複製元と複製先が同じです: $srcFull" }
+if ($dstFull.StartsWith($srcFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    Die "複製先が複製元の中にあります（元を壊します）: $dstFull"
+}
+if ($srcFull.StartsWith($dstFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    Die "複製元が複製先の中にあります（/MIR で元が消えます）: $srcFull"
+}
 if (-not (Test-Path -LiteralPath (Join-Path $ComfyUISource 'main.py'))) {
     Die "ComfyUI が見つかりません: $ComfyUISource"
 }
