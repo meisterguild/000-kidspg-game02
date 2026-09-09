@@ -43,6 +43,8 @@ interface GameSection {
   stageProgression?: unknown;
   partialScoreRate?: unknown;
   repeatLastStage?: unknown;
+  /** 平面モード（3歳以上向け）。立方体側と独立に同じ対応を持つ */
+  plane?: unknown;
 }
 
 const asRecord = (v: unknown): Record<string, unknown> | null =>
@@ -68,11 +70,41 @@ export const collectBalanceWarnings = (before: unknown, after: unknown): string[
   const afterGame = asRecord(asRecord(after)?.game) as GameSection | null;
   if (!afterGame) return warnings;
 
+  // 立体（既定）と平面（3歳以上向け）を同じ検査に通す。
+  // 🔴 平面も「クリアした面の数＝ランク＝カード背景」の対応を持っており、
+  // 設定画面から独立に変えられる。片方だけ見ていると、平面の設定を変えたときに
+  // **何も言われないまま対応が崩れる**（立体側と同じ事故が起きる）。
+  inspect(warnings, beforeGame, afterGame, '');
+  inspect(
+    warnings,
+    asRecord(beforeGame?.plane) as GameSection | null,
+    asRecord(afterGame.plane) as GameSection | null,
+    '平面モードの'
+  );
+
+  return warnings;
+};
+
+/**
+ * 1つの構成（立体 or 平面）について、対応の破れを見る。
+ *
+ * @param label 文面の頭に付ける区別。立体は空文字、平面は「平面モードの」
+ */
+const inspect = (
+  warnings: string[],
+  beforeGame: GameSection | null,
+  afterGame: GameSection | null,
+  label: string
+): void => {
+  if (!afterGame) return;
+
   // --- 1. 対応が崩れうる値が変わったか ---
   const changed: string[] = [];
   if (stagesKey(beforeGame?.stageProgression) !== stagesKey(afterGame.stageProgression)) {
     changed.push('ステージ構成（盤サイズ・難易度・倍率）');
   }
+  // 部分点率は game 直下にしか無く、平面でも同じ値が効く。
+  // 平面側の呼び出しでは両方 undefined になるので、二重に言うことはない。
   if ((beforeGame?.partialScoreRate ?? null) !== (afterGame.partialScoreRate ?? null)) {
     changed.push('部分点率');
   }
@@ -86,7 +118,7 @@ export const collectBalanceWarnings = (before: unknown, after: unknown): string[
 
   if (changed.length > 0) {
     warnings.push(
-      changed.join('・') +
+      label + changed.join('・') +
         'を変えました。' +
         '🔴 「クリアした面の数＝ランク＝カード背景」の対応が崩れている可能性があります' +
         '（ランクは result.json とカード画像に焼き付くので、後から直せません）。' +
@@ -103,7 +135,7 @@ export const collectBalanceWarnings = (before: unknown, after: unknown): string[
       for (let i = 0; i < nums.length - 1; i += 1) {
         if (nums[i] <= nums[i + 1]) {
           warnings.push(
-            `ランク閾値が高い順に並んでいません（${nums[i]} → ${nums[i + 1]}）。` +
+            `${label}ランク閾値が高い順に並んでいません（${nums[i]} → ${nums[i + 1]}）。` +
               'このままだと下位のランクに到達できません。'
           );
           break;
@@ -119,7 +151,7 @@ export const collectBalanceWarnings = (before: unknown, after: unknown): string[
       const size = stage?.size;
       if (typeof size === 'number' && size > HEAVY_BOARD_SIZE) {
         warnings.push(
-          `ステージ${i + 1} の盤サイズ ${size} は大きすぎます。` +
+          `${label}ステージ${i + 1} の盤サイズ ${size} は大きすぎます。` +
             '盤面生成はゲーム画面を止めたまま走るので、' +
             '実測では 8×8（むずかしい）で最大 6.3 秒固まりました' +
             '（そのあいだ制限時間は進みます）。当日は 4 のままにしてください。'
@@ -127,6 +159,4 @@ export const collectBalanceWarnings = (before: unknown, after: unknown): string[
       }
     }
   }
-
-  return warnings;
 };
