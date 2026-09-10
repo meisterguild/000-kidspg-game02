@@ -631,6 +631,45 @@ test('パッケージの ops には合成実装まで入る', () => {
 // 2026-09-09 の敵対的レビュー（パッケージ作成と当日セットアップ）
 // ================================================================
 
+test('診断と修復.bat が USB のルートと C:\\kidspg の両方に載る', () => {
+  // 🔴 0_セットアップ.bat は照合に数分〜十数分かかるので、確認のたびに
+  //    回させてはいけない（実機で「時間の無駄」と指摘された）。
+  const src = fs.readFileSync(path.join(ROOT, 'tools', 'make-onsite-package.cjs'), 'utf-8');
+  assert.match(src, /'4_診断と修復\.bat'/, 'USB のルートに置いていません');
+  assert.match(src, /payload, '診断と修復\.bat'/, 'C:\\kidspg 直下に置いていません');
+});
+
+test('診断と修復.bat は cmd の決めごとを守っている', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'diagnose.bat'), 'utf-8');
+  // CRLF（cmd は LF だけの bat を正しく行分割できない）
+  assert.strictEqual((bat.match(/(?<!\r)\n/g) || []).length, 0, 'CR の無い改行があります');
+  // chcp より上は ASCII のみ（CP932 のコンソールで行が割れる）
+  const lines = bat.split('\r\n');
+  const chcpAt = lines.findIndex((l) => l.trim() === 'chcp 65001 > nul');
+  assert.ok(chcpAt > 0, 'chcp がありません');
+  // eslint-disable-next-line no-control-regex
+  assert.ok(!/[^\x00-\x7F]/.test(lines.slice(0, chcpAt).join('')), 'chcp より上に非 ASCII があります');
+  // 出力を横取りしている間に pause で待つと、画面に何も出ず固まって見える
+  assert.strictEqual((bat.match(/^pause$/gm) || []).length, 1, 'pause は外側の1回だけにしてください');
+});
+
+test('診断と修復.bat はログを自分と同じ場所へ残す', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'diagnose.bat'), 'utf-8');
+  // USB から実行したら USB に残る（そのまま送れるように）
+  assert.match(bat, /set "LOG=%~dp0診断ログ_/, 'バッチと同じ場所に残していません');
+  // 書けない場所なら %TEMP% へ逃がす
+  assert.match(bat, /if not exist "%LOG%" set "LOG=%TEMP%/, '書けないときの逃げ道がありません');
+});
+
+test('診断と修復.bat は -version ではなく実際に PNG を扱わせる', () => {
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'diagnose.bat'), 'utf-8');
+  assert.match(bat, /-size 4x4 xc:white/, 'PNG を書かせていません');
+  assert.match(bat, /identify "!BASEPNG!"/, '本物のカード土台を読ませていません');
+  assert.match(bat, /MAGICK_CODER_MODULE_PATH/, 'コーダーの置き場を教えていません');
+  // 🔴 エラー本文を握り潰さない（前回これで原因が分からなかった）
+  assert.match(bat, /type "%ERRFILE%"/, 'エラー本文を表示していません');
+});
+
 test('生成される start-comfyui.bat は日本語コンソールで読める（chcp と ASCII 先頭）', () => {
   const { buildStartComfyUIBat } = require(LIB);
   const bat = buildStartComfyUIBat();

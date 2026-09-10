@@ -533,6 +533,13 @@ copyFile(path.join(__dirname, 'onsite', '0_setup.bat'), path.join(outDir, '0_セ
 copyFile(path.join(__dirname, 'onsite', 'warmup.bat'), path.join(payload, 'ウォームアップ.bat'));
 // 0_セットアップ.bat が隣から呼ぶ。忘れると照合だけが黙って飛ぶ
 copyFile(path.join(__dirname, 'onsite', 'verify-copy.ps1'), path.join(outDir, 'verify-copy.ps1'));
+// 🔴 **確認のたびに 0_セットアップ.bat を回さなくて済むようにする。**
+// あちらは 60,000 ファイルのハッシュ照合をするので数分〜十数分かかる。
+// 診断と修復はコピーも照合もせず、動作の確認と暖機だけをやる。
+// USB のルート（差したまま叩ける）と C:\kidspg 直下（USB が無くても叩ける）の
+// 両方に置く。ログはバッチと同じ場所に残る。
+copyFile(path.join(__dirname, 'onsite', 'diagnose.bat'), path.join(outDir, '4_診断と修復.bat'));
+copyFile(path.join(__dirname, 'onsite', 'diagnose.bat'), path.join(payload, '診断と修復.bat'));
 copyFile(path.join(ROOT, 'docs', 'setup-onsite.md'), path.join(outDir, '1_当日手順書.md'));
 // ComfyUI の構築手順も入れる。当日PCでは作り直せない（オフラインで pip も使えない）が、
 // 「どう組んだものが入っているのか」が分からないと、壊れたときに何も判断できない。

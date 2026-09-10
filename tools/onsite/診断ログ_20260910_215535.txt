@@ -1,0 +1,53 @@
+============================================================
+  KidsPG「AIグミパク！」 診断と修復
+  2026/09/10 21:55:35
+============================================================
+
+  ＊ コピーも照合もしません。何度でも実行して構いません。
+  ＊ Smart App Control の判定を取り直すときは、
+     **インターネットに繋いでから**実行してください。
+
+[1/5] 置き場所と部品
+       OK : D:\KidsPG2026_setup\payload
+       OK : magick.exe
+       OK : コーダー 140 個 : D:\KidsPG2026_setup\payload\bin\ImageMagick\modules\coders
+       OK : Node
+
+[2/5] ImageMagick に置き場を教える
+       MAGICK_CODER_MODULE_PATH=D:\KidsPG2026_setup\payload\bin\ImageMagick\modules\coders
+       MAGICK_HOME=D:\KidsPG2026_setup\payload\bin\ImageMagick
+
+[3/5] Smart App Control のブロック（実行前）
+       自分たちのファイルのブロック : 0 件（無関係 0 件／不明 0 件）
+
+[4/5] ImageMagick を実際に動かす
+       OK : 4x4 の PNG を書けました
+       OK : カードの土台を読めました（1 回目）
+
+[5/5] カードの合成が通るか（アプリと同じ経路）
+   設定 : D:\KidsPG2026_setup\payload\ops\config.json
+   素材 : D:\KidsPG2026_setup\payload\app
+   OK : 土台画像 8 枚 : D:\KidsPG2026_setup\payload\app\card_base_images
+   OK : フォント : C:/Windows/Fonts/meiryo.ttc
+   OK : MAGICK_CODER_MODULE_PATH=D:\KidsPG2026_setup\payload\bin\ImageMagick\modules\coders
+   OK : MAGICK_FILTER_MODULE_PATH=D:\KidsPG2026_setup\payload\bin\ImageMagick\modules\filters
+   OK : MAGICK_CONFIGURE_PATH=D:\KidsPG2026_setup\payload\bin\ImageMagick
+   OK : MAGICK_HOME=D:\KidsPG2026_setup\payload\bin\ImageMagick
+   OK : magick の場所 : D:\KidsPG2026_setup\payload\bin\ImageMagick\magick.exe
+   OK : PNG を書けました
+       OK : 合成に必要なものは揃っています
+
+[おまけ] Smart App Control のブロック（実行後）
+       自分たちのファイルのブロック : 0 件（無関係 0 件／不明 0 件）
+
+============================================================
+  ★★★ 問題は見つかりませんでした ★★★
+
+  次にやること
+    1. インターネットを切る（Wi-Fi をオフ。「手動」で戻す設定に）
+    2. D:\KidsPG2026_setup\payload\app\start-kidspg.bat を実行
+    3. ★★★ 準備完了 ★★★ が出たら 1 プレイ通す
+    4. results\<日時>\memorial_card_*.png ができていれば成功
+
+  ＊ 失敗した回のカードを作り直すなら、このバッチに /fix を付けて実行
+============================================================
