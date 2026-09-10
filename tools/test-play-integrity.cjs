@@ -94,7 +94,26 @@ test('プレースホルダ版が無くてもAI完了から本カードを作る
     !/currentState !== 'dummy_completed'/.test(body),
     "dummy_completed 以外を全部保留にしています（カードが1枚も作られない回が出ます）"
   );
-  assert.match(body, /currentState === 'dummy_inprogress'/, '保留の条件が合成中に絞られていません');
+  // 🔴 「dummy_inprogress を含む」だけでは足りない。元のバグは
+  //    `currentState === undefined || currentState === 'dummy_inprogress'`
+  //    と書いても成立してしまう（実測: 変異を入れても26件すべて緑だった）。
+  //    保留の条件式そのものを取り出して、**それが合成中ちょうど1つ**であることを見る。
+  // 保留する枝は「pendingAICompletions.set を持つ if」で特定する
+  const setAt = body.indexOf('this.pendingAICompletions.set');
+  assert.ok(setAt > 0, '保留する枝（pendingAICompletions.set）が見つかりません');
+  const ifs = [...body.slice(0, setAt).matchAll(/if \(([^)]*)\)\s*\{/g)];
+  assert.ok(ifs.length > 0, '保留の分岐が見つかりません');
+  const cond = ifs[ifs.length - 1][1].trim();
+  assert.strictEqual(
+    cond,
+    "currentState === 'dummy_inprogress'",
+    '保留の条件が「合成中ちょうど1つ」ではありません: ' + cond
+  );
+  // undefined（プレースホルダ版すら作れなかった回）は**保留にせず進める**
+  assert.ok(
+    !/undefined/.test(cond) && !/!currentState/.test(cond),
+    'プレースホルダ版が無い回を保留にしています（誰も消化せずカードが1枚も作られません）'
+  );
 });
 
 test('AI変換の投入は先渡しの失敗で止めない', () => {
@@ -172,6 +191,14 @@ test('ゲームが始まる前は Esc で戻れる（出口が1つも無くな�
   // ゲームエンジンが出来てからなので、初期化に失敗すると出口が消える
   assert.match(src, /window\.addEventListener\('keydown'/, '起動前の Esc を受けていません');
   assert.match(src, /if \(!isLoading && !error\) return;/, '受ける範囲が起動前に絞られていません');
+  // 🔴 文字列が「どこかにある」だけでは、条件を反転しても・受けて何もしなくても通る
+  //    （実測: どちらの変異でも26件すべて緑だった）。**語順ごと**縛る。
+  //    ここは初期化に失敗した画面から抜ける唯一の出口なので、消えると詰む。
+  assert.match(
+    src,
+    /if \(event\.key !== 'Escape'\) return;[\s\S]{0,200}handleEscapeKey\(\)/,
+    'Esc を受けても実際に戻る処理を呼んでいません'
+  );
 });
 
 test('config が読めないときは「読み込み中」で止めずに理由を出す', () => {
@@ -187,7 +214,17 @@ test('画面を進めるキーはリピートを無視する', () => {
     'src/renderer/pages/TopPage.tsx',
   ]) {
     const src = fs.readFileSync(path.join(ROOT, rel), 'utf-8');
-    assert.match(src, /event\.repeat/, rel + ' がキーリピートを無視していません');
+    // 🔴 `event.repeat` があるかだけだと、`if (!event.repeat) return;`（意味が真逆）
+    //    でも通る（実測: 3ファイルとも反転して26件すべて緑だった）。
+    assert.match(
+      src,
+      /if \(event\.repeat\)\s*(\{\s*)?return;/,
+      rel + ' がキーリピートを無視していません（条件が反転している可能性）'
+    );
+    assert.ok(
+      !/if \(!event\.repeat\)\s*(\{\s*)?return;/.test(src),
+      rel + ' がリピートのときだけ進めています（条件が反転しています）'
+    );
   }
 });
 
@@ -195,8 +232,14 @@ test('記録の保存に失敗したら自動でトップへ戻さない', () =>
   const src = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'pages', 'ResultPage.tsx'), 'utf-8');
   // 🔴 以前は alert を連打しながら15秒後に TOP へ戻り、記録は残らなかった
   assert.ok(!/alert\(`結果の保存/.test(src), 'alert に戻っています');
-  assert.match(src, /if \(saveFailure\) return;/, '失敗中も自動復帰しています');
   assert.match(src, /SAVE_MAX_ATTEMPTS/, '再試行の上限がありません');
+  // 🔴 ファイル全体に対する検索だと、**呼ばれない別の関数**に1行置くだけで通る
+  //    （実測で確認）。自動復帰の effect を切り出して、その**中に**あることを見る。
+  const at = src.indexOf('// 🔴 保存に失敗しているあいだは自動で TOP へ戻さない');
+  assert.ok(at > 0, '自動復帰の effect が見つかりません');
+  const eff = src.slice(at, src.indexOf('}, [', at));
+  assert.match(eff, /if \(saveFailure\) return;/, '失敗中も自動復帰しています');
+  assert.match(eff, /setTimeout|handleRestart/, '自動復帰の effect ではない箇所を見ています');
 });
 
 // ---------------------------------------------------------------- 6. 稼働中の障害を見せる
@@ -208,7 +251,17 @@ test('稼働中の ComfyUI 障害はスタッフ向けの帯へ流す', () => {
   );
   // comfyui-error / comfyui-job-error はテスト画面しか購読していなかった
   assert.match(src, /notifyStaff/, '帯へ流していません');
-  assert.match(src, /startup-warning/, '帯が購読しているチャンネルへ送っていません');
+  // 🔴 名前とチャンネル名が「ファイルのどこかにある」だけだと、本体を
+  //    `if (false && ...)` で潰しても通る（実測で確認）。本体を切り出して見る。
+  const nsAt = src.indexOf('private notifyStaff(');
+  assert.ok(nsAt > 0, 'notifyStaff の定義が見つかりません');
+  const nsBody = src.slice(nsAt, src.indexOf('\r\n  }', nsAt));
+  assert.match(
+    nsBody,
+    /webContents\.send\(\s*'startup-warning'/,
+    'notifyStaff が帯（startup-warning）へ送っていません'
+  );
+  assert.ok(!/if \(false/.test(nsBody), 'notifyStaff の本体が無効化されています');
   const exitHandler = src.slice(src.indexOf("this.worker.on('exit'"));
   assert.match(
     exitHandler.slice(0, 1500),
@@ -222,7 +275,12 @@ test('保持件数は設定の読み直しで反映される', () => {
     path.join(ROOT, 'src', 'main', 'services', 'results-manager.ts'),
     'utf-8'
   );
-  assert.match(rm, /updateConfig/, '設定を差し替える入口がありません');
+  // 🔴 メソッド名があるかだけだと、本体の先頭に return; を置いても通る（実測）。
+  const uc = rm.slice(rm.search(/\bupdateConfig\s*\(/));
+  const ucBody = uc.slice(uc.indexOf('{'), uc.indexOf('\n  }'));
+  assert.ok(ucBody.length > 0, '設定を差し替える入口がありません');
+  assert.match(ucBody, /this\.config\s*=/, 'updateConfig が設定を差し替えていません');
+  assert.ok(!/^\s*\{\s*return;/.test(ucBody), 'updateConfig の本体が潰されています');
   const main = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.ts'), 'utf-8');
   const calls = (main.match(/resultsManager\?\.updateConfig/g) || []).length;
   assert.ok(calls >= 2, 'reload-config と save-config の両方で反映していません（' + calls + ' か所）');
@@ -320,11 +378,23 @@ test('起動時の点検は実際に PNG を書かせる', () => {
   assert.ok(envAt > 0 && envAt < probeAt, '環境を整える前に点検しています');
 });
 
-test('起動バッチと 0_セットアップ.bat も PNG を書かせて確かめる', () => {
+test('起動バッチと 0_セットアップ.bat も PNG を書かせ、その結果を見る', () => {
   for (const rel of ['start-kidspg.bat', 'tools/onsite/0_setup.bat']) {
     const bat = fs.readFileSync(path.join(ROOT, rel), 'utf-8');
     assert.match(bat, /-size 4x4 xc:white PNG:-/, rel + ' が PNG を書かせていません');
     assert.match(bat, /MAGICK_CODER_MODULE_PATH/, rel + ' がコーダーの置き場を教えていません');
+    // 🔴 探査を書いているかだけでは足りない。**結果を見ているか**まで見る。
+    //    実測: errorlevel の閾値を 1 → 99 にしても（＝失敗しても警告を出さない）
+    //    すべて緑だった。それは実機で1度踏んだ「カードが作れないのに準備完了」そのもの。
+    const lines = bat.split('\r\n');
+    const i = lines.findIndex((l) => l.includes('-size 4x4 xc:white PNG:-'));
+    assert.ok(i >= 0, rel + ' の探査行が見つかりません');
+    const after = lines.slice(i + 1, i + 4).join('\n');
+    assert.match(
+      after,
+      /if errorlevel 1\b|if not errorlevel 1\b/,
+      rel + ' が PNG 探査の結果を見ていません（探査行の直後）'
+    );
   }
 });
 

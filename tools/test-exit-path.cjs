@@ -88,9 +88,13 @@ test('終了が終わらないときの強制終了の保険が残っている',
   const main = read('src/main/main.ts');
   assert.match(main, /QUIT_FORCE_EXIT_MS/, '強制終了までの猶予の定数がありません');
   assert.match(main, /app\.exit\(0\)/, 'app.exit による最後の手段がありません');
-  assert.match(
-    stripComments(main),
-    /armForceExit\(\)/,
-    'armForceExit が呼ばれていません'
+  // 🔴 `armForceExit()` は**定義行 `private armForceExit(): void {` 自身**にも
+  //    一致する。実測（3巡目）: 呼び出し2か所を両方消しても4件すべて緑だった。
+  //    保険が武装されないと、2026-09-04 に起きた「プロセスが残って単一インスタンス
+  //    ロックを握り、start-kidspg.bat で二度と起動できない」がそのまま戻る。
+  const calls = (stripComments(main).match(/this\.armForceExit\(\)/g) || []).length;
+  assert.ok(
+    calls >= 2,
+    'armForceExit が呼ばれていません（' + calls + ' か所。終了要求と window-all-closed の2経路が要ります）'
   );
 });

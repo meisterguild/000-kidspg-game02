@@ -270,6 +270,90 @@ test('起動バッチは印を待ち、出なければ準備できていない�
   assert.match(raw, /READY_WAIT/);
   assert.match(raw, /READY_NG/);
   assert.match(raw, /準備完了/);
+
+  // 🔴 **文字列があるかだけでは、条件を反転しても通る。**
+  //    実測（3巡目のレビュー）: `if not "!RBLOCK!"=="0" (` を `if "!RBLOCK!"=="0" (`
+  //    に反転しても、`if not defined RBLOCK set "RBLOCK=-1"` を
+  //    `set "RBLOCK=0"` にしても、41件すべて緑だった。
+  //    ここは当日手順書の「★★★ 準備完了 ★★★ が出たら受付を開けてよい」という
+  //    約束そのものなので、条件式まで縛る。
+
+  // 1) 遊べないもの（blockers）が1件でもあれば READY_NG を立てる
+  const ngAt = raw.indexOf('set /a WARN+=!RBLOCK!');
+  assert.ok(ngAt > 0, 'blockers の件数を WARN に足していません');
+  const ifs = [...raw.slice(0, ngAt).matchAll(/if (not )?"!RBLOCK!"=="0" \(/g)];
+  assert.ok(ifs.length > 0, 'RBLOCK による分岐が見つかりません');
+  assert.strictEqual(
+    ifs[ifs.length - 1][1],
+    'not ',
+    'blockers が 0 のときに READY_NG を立てています（条件が反転しています）'
+  );
+  assert.match(
+    raw.slice(ngAt, ngAt + 200),
+    /set "READY_NG=1"/,
+    'blockers があるのに READY_NG を立てていません'
+  );
+
+  // 2) ready.json を読めなかったときは「読めた」ことにしない
+  assert.match(
+    raw,
+    /if not defined RBLOCK set "RBLOCK=-1"/,
+    '報告を読めなかったときに素通りします（-1 にしていません）'
+  );
+  const unknownAt = raw.indexOf('if "!RBLOCK!"=="-1" (');
+  assert.ok(unknownAt > 0, '「読めなかった」の分岐がありません');
+  assert.match(
+    raw.slice(unknownAt, unknownAt + 300),
+    /set "READY_NG=1"/,
+    '報告を読めなくても準備完了と言います'
+  );
+
+  // 3) まとめは READY_NG を見て分岐する
+  assert.match(
+    raw,
+    /if defined READY_NG goto :sum_notready/,
+    'まとめが READY_NG を見ていません'
+  );
+});
+
+test('準備できているかの入口（書き込みの実測）が、成功も失敗も返す', async () => {
+  // 🔴 classifyReadiness は12本のテストで丁寧に見ているのに、その**入力**を
+  //    作るところは「書ける場合に true」しか試していなかった。実測（3巡目）:
+  //    main.ts の `writable: await checkResultsWritable(...)` を `writable: true`
+  //    に潰しても41件すべて緑だった。false 側を1本足しておく。
+  const okDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-ready-'));
+  try {
+    assert.strictEqual(await checkResultsWritable(okDir), true, '書ける場所で false を返しました');
+  } finally {
+    fs.rmSync(okDir, { recursive: true, force: true });
+  }
+  // 存在しないドライブレターは Windows で確実に失敗する
+  assert.strictEqual(
+    await checkResultsWritable('Z:\\kidspg-does-not-exist\\results'),
+    false,
+    '書けない場所で true を返しました（「準備完了」が嘘になります）'
+  );
+});
+
+test('準備報告の組み立てが、判定結果をそのまま載せている', () => {
+  // 🔴 実測（3巡目）: main.ts で `const { notes } = classifyReadiness(base); const blockers = [];`
+  //    と**判定結果を捨てて**も41件すべて緑だった。配線そのものを見る。
+  const main = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.ts'), 'utf-8');
+  assert.match(
+    main,
+    /const \{ blockers, notes \} = classifyReadiness\(/,
+    '判定結果（blockers）を受け取っていません'
+  );
+  assert.match(
+    main,
+    /writable: await checkResultsWritable\(/,
+    '書き込みを実測せずに報告しています'
+  );
+  // 受け取った blockers / notes をそのまま報告に載せていること
+  const clsAt = main.indexOf('classifyReadiness(');
+  const after = main.slice(clsAt, clsAt + 800);
+  assert.match(after, /blockers,?\s/, '受け取った blockers を報告に載せていません');
+  assert.match(after, /notes,?\s/, '受け取った notes を報告に載せていません');
 });
 
 test('中止の印を立てたら、必ずまとめへ飛ぶ', () => {
@@ -456,10 +540,17 @@ test('起動バッチは ComfyUI をローカルで起こすかを baseUrl と r
   const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
   // 🔴 手順書の退避策は activeProfile を local_light にすること。
   //    プロファイル名の一致で決めていると、その瞬間に ComfyUI を誰も起こさなくなる
-  assert.ok(
-    !/if \/i not "!PROFILE!"=="local"/.test(bat),
-    'プロファイル名の一致で「ローカルかどうか」を決めています（local_light で壊れます）'
-  );
+  // 🔴 1つの書き方だけを禁止しても、NEQ や if not の別表記で素通りする
+  //    （実測: `if /i "!PROFILE!" NEQ "local" set "COMFY_IS_LOCAL="` で41件緑だった）。
+  //    COMFY_IS_LOCAL を触っている行を**全部**拾い、そこに !PROFILE! が無いことを見る。
+  for (const line of bat.split('\r\n')) {
+    if (!/set "COMFY_IS_LOCAL=/.test(line)) continue;
+    assert.ok(
+      !/!PROFILE!/.test(line),
+      'プロファイル名で「ローカルかどうか」を決めています（local_light で壊れます）: ' +
+        line.trim()
+    );
+  }
   assert.match(bat, /COMFY_IS_LOCAL/, 'baseUrl と root による判定がありません');
   assert.match(bat, /\/\/127\.0\.0\.1:/, 'baseUrl がこのPCを指すかを見ていません');
 });
@@ -467,7 +558,11 @@ test('起動バッチは ComfyUI をローカルで起こすかを baseUrl と r
 test('起動バッチは待受しているだけで「起動しています」と言わない', () => {
   const bat = fs.readFileSync(path.join(ROOT, 'start-kidspg.bat'), 'utf-8');
   // 8188 番は別プロジェクトの ComfyUI や無関係なプログラムでも LISTENING になる
-  assert.match(bat, /:comfy_answers/, '応答の確認（/system_stats）がありません');
+  // 🔴 ラベル定義があるかだけだと、呼び出しを rem で潰しても通る（実測）。
+  //    **呼び出し側**を数える。
+  const calls = (bat.match(/^\s*call :comfy_answers/gm) || []).length;
+  assert.ok(calls >= 1, '応答の確認（:comfy_answers）を呼んでいません');
+  assert.match(bat, /^:comfy_answers\s*$/m, ':comfy_answers の定義がありません');
   assert.match(bat, /system_stats/, '/system_stats を見ていません');
 });
 

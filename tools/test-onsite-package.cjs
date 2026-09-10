@@ -416,9 +416,30 @@ test('bat の先頭は ASCII だけ（CP932 のコンソールが UTF-8 を誤�
 
 test('0_setup.bat は results と logs を消さない（当日の成果物を守る）', () => {
   const raw = fs.readFileSync(path.join(ROOT, 'tools/onsite/0_setup.bat'), 'utf8');
-  // /MIR は出力先を鏡にするので、当日の results を消してしまう
-  assert.ok(!/robocopy[^\r\n]*\/MIR/.test(raw), '/MIR を使うと results が消えます');
-  assert.match(raw, /\/XD results logs/, 'results と logs を除外していません');
+  // 🔴 **/MIR だけを禁止しても足りない。** /PURGE も宛先の余分なファイルを消す。
+  //    実測（3巡目のレビュー）: /E /PURGE の robocopy を1行足しても63件すべて緑だった。
+  //    robocopy の行を**全部**拾い、1行ずつ見る。
+  const lines = raw.split('\r\n').filter((l) => /robocopy/i.test(l) && !/^\s*rem\b/i.test(l));
+  assert.ok(lines.length > 0, 'robocopy の行が見つかりません');
+  for (const line of lines) {
+    assert.ok(
+      !/\/(MIR|PURGE)\b/i.test(line),
+      '宛先を消すフラグを使っています（当日の results が消えます）: ' + line.trim()
+    );
+    // app へ入れる robocopy は、当日の成果物を必ず除外すること
+    if (/%PKG_TARGET%\\app/i.test(line)) {
+      assert.match(
+        line,
+        /\/XD[^\r\n]*\bresults\b/i,
+        'app へのコピーが results を除外していません: ' + line.trim()
+      );
+      assert.match(
+        line,
+        /\/XD[^\r\n]*\blogs\b/i,
+        'app へのコピーが logs を除外していません: ' + line.trim()
+      );
+    }
+  }
 });
 
 test('0_setup.bat は置き場所の食い違いを検出して止まる', () => {
