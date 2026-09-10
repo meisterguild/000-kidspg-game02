@@ -798,6 +798,12 @@ class ComfyUIWorker {
         throw new Error('出力画像が見つかりません');
       }
 
+      // 🔴 **かかった秒数をログに残す。** 当日「1人あたり何分か」は
+      //    受付の回し方を決める数字なのに、これまでどこにも出ておらず、
+      //    ComfyUI 側のログ（Prompt executed in N seconds）を掘るしかなかった。
+      const elapsedSec = Math.round((Date.now() - job.startTime) / 1000);
+      console.log(`[ComfyUI] 生成完了 ${datetime}: ${elapsedSec} 秒（投入から）`);
+
       const savedFilePath = await this.downloadAndSaveResult(job, imageUrl, actualFilename);
       // image_generate.jsonが既に存在するため、workflow.json保存は不要
 

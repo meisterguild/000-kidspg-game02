@@ -304,28 +304,56 @@ echo.
 rem ------------------------------------------------------------
 echo [5/6] 検証
 set "MAGICK=%TARGET%\bin\ImageMagick\magick.exe"
-if exist "!MAGICK!" (
-  rem ⚠️ 引用符を4個（"!MAGICK!" と "ImageMagick"）にすると cmd の引用符処理で
-  rem for /f が**必ず空**になる（実測）。findstr を挟まず、1行目だけを取る。
-  rem さらに「exe はあるが起動できない」（SAC・VC++ 不足）を通さないよう、
-  rem 版数が取れなかったら警告にする（敵対的レビュー 2026-09-09 の指摘）。
-  for /f "usebackq tokens=*" %%V in (`"!MAGICK!" -version 2^>nul`) do (
-    if not defined MAGICK_VER set "MAGICK_VER=%%V"
-  )
-  if defined MAGICK_VER (
-    echo        OK : ImageMagick  !MAGICK_VER!
-  ) else (
-    echo        [警告] magick.exe はありますが起動できません : !MAGICK!
-    echo               記念カードが1枚も作られません。
-    echo               VC++ ランタイム、または Smart App Control のブロックを疑ってください。
-    set /a WARN+=1
-  )
-) else (
-  echo        [警告] ImageMagick がありません : !MAGICK!
-  echo               記念カードが1枚も作られません。
-  set "MISSING_CORE=1"
-  set /a WARN+=1
+rem 🔴 携帯版 ImageMagick は**コーダー DLL（PNG などを読み書きする部品）の
+rem    置き場をレジストリから引く**。インストーラがそのキーを書くためで、
+rem    フォルダをコピーしただけのこのPCにはキーが無い。その状態だと
+rem      magick.exe: RegistryKeyLookupFailed `CoderModulesPath'
+rem      magick.exe: no decode delegate for this image format `...png'
+rem    となり、**記念カードが1枚も作られない**（当日PCで実測 2026-09-10）。
+rem    しかも "magick -version" はコーダーを読まないので**通ってしまう**ため、
+rem    「★★★ 準備完了 ★★★」と表示していた。置き場を教え、実際に PNG を書かせる。
+set "IMDIR=%TARGET%\bin\ImageMagick"
+if exist "!IMDIR!\modules\coders" set "MAGICK_CODER_MODULE_PATH=!IMDIR!\modules\coders"
+if exist "!IMDIR!\modules\filters" set "MAGICK_FILTER_MODULE_PATH=!IMDIR!\modules\filters"
+if exist "!IMDIR!\colors.xml" set "MAGICK_CONFIGURE_PATH=!IMDIR!"
+set "MAGICK_HOME=!IMDIR!"
+
+if not exist "!MAGICK!" goto :magick_missing
+"!MAGICK!" -size 4x4 xc:white PNG:- > nul 2>&1
+if errorlevel 1 goto :magick_no_png
+rem ⚠️ 引用符を4個（"!MAGICK!" と "ImageMagick"）にすると cmd の引用符処理で
+rem for /f が**必ず空**になる（実測）。findstr を挟まず、1行目だけを取る。
+for /f "usebackq tokens=*" %%V in (`"!MAGICK!" -version 2^>nul`) do (
+  if not defined MAGICK_VER set "MAGICK_VER=%%V"
 )
+if not defined MAGICK_VER goto :magick_no_version
+echo        OK : ImageMagick  !MAGICK_VER!
+echo        OK : PNG を書けました
+goto :magick_done
+
+:magick_missing
+echo        [警告] ImageMagick がありません : !MAGICK!
+echo               記念カードが1枚も作られません。
+set "MISSING_CORE=1"
+set /a WARN+=1
+goto :magick_done
+
+:magick_no_png
+echo        [警告] ImageMagick はありますが PNG を扱えません : !MAGICK!
+echo               記念カードが1枚も作られません。
+echo               携帯版はコーダーの置き場が要ります。
+echo               bin\ImageMagick\modules\coders があるか確認してください。
+set "MISSING_CORE=1"
+set /a WARN+=1
+goto :magick_done
+
+:magick_no_version
+echo        [警告] magick.exe はありますが版数を取れません : !MAGICK!
+echo               VC++ ランタイム、または Smart App Control のブロックを疑ってください。
+set "MISSING_CORE=1"
+set /a WARN+=1
+
+:magick_done
 
 rem Node は当日PCではこれ1つだけ（PATH には無い）。無い／起動できないと
 rem 作り直し（再生成.bat）と、当日手順書の検証4（comfyui-smoke）が動かない。

@@ -149,16 +149,41 @@ if not exist "%~dp0tmp" (
 ) else (
   set "MAGICK_TEMPORARY_PATH=%~dp0tmp"
 )
+rem 🔴 携帯版は**コーダー DLL の置き場をレジストリから引く**ので、
+rem    インストールしていない当日PCでは PNG を1枚も読めない
+rem    （当日PCで実測 2026-09-10: RegistryKeyLookupFailed →
+rem     記念カードが0枚。しかも "magick -version" は通ってしまうため
+rem     「★★★ 準備完了 ★★★」と表示していた）。
+rem    置き場を環境変数で教える。アプリへも下の APP_ENV で渡す。
+if defined MAGICK_DIR (
+  set "MAGICK_HOME=!MAGICK_DIR!"
+  if exist "!MAGICK_DIR!\modules\coders" set "MAGICK_CODER_MODULE_PATH=!MAGICK_DIR!\modules\coders"
+  if exist "!MAGICK_DIR!\modules\filters" set "MAGICK_FILTER_MODULE_PATH=!MAGICK_DIR!\modules\filters"
+  if exist "!MAGICK_DIR!\colors.xml" set "MAGICK_CONFIGURE_PATH=!MAGICK_DIR!"
+)
+
 where magick > nul 2>&1
 if errorlevel 1 (
   echo        [警告] magick が見つかりません。記念カードが1枚も作られません。
   echo               ImageMagick をインストールし、PATH を通してから起動してください。
   set /a WARN+=1
 ) else (
-  for /f "tokens=*" %%V in ('magick -version 2^>nul ^| findstr /i "ImageMagick"') do (
-    if not defined MAGICK_VER set "MAGICK_VER=%%V"
+  rem 🔴 **"-version" で確かめない。** コーダーを読み込まないので、
+  rem    PNG を1枚も扱えない状態でも成功する（実測で確認）。
+  rem    実際に 4x4 の PNG を書かせて、扱えることを確かめる。
+  magick -size 4x4 xc:white PNG:- > nul 2>&1
+  if errorlevel 1 (
+    echo        [警告] magick はありますが PNG を扱えません。
+    echo               記念カードが1枚も作られません。
+    echo               携帯版は modules\coders が要ります（bin\ImageMagick を確認）。
+    set /a WARN+=1
+  ) else (
+    for /f "tokens=*" %%V in ('magick -version 2^>nul ^| findstr /i "ImageMagick"') do (
+      if not defined MAGICK_VER set "MAGICK_VER=%%V"
+    )
+    echo        OK : !MAGICK_VER!
+    echo        OK : PNG を書けました
   )
-  echo        OK : !MAGICK_VER!
 )
 echo.
 
@@ -606,6 +631,11 @@ rem    渡さないと %TEMP% に出る（当日PCは1フォルダで完結さ�
 rem  ・KIDSPG_APP_LOG … 出したログの場所。当日の調べ物の入口を1つに絞る
 set "APP_ENV="
 if defined MAGICK_DIR set "APP_ENV=set KIDSPG_MAGICK=!MAGICK_DIR!\magick.exe"
+rem コーダーの置き場も渡す（アプリは自分でも探すが、両方から入れておく）
+if defined MAGICK_CODER_MODULE_PATH set "APP_ENV=!APP_ENV!&& set MAGICK_CODER_MODULE_PATH=!MAGICK_CODER_MODULE_PATH!"
+if defined MAGICK_FILTER_MODULE_PATH set "APP_ENV=!APP_ENV!&& set MAGICK_FILTER_MODULE_PATH=!MAGICK_FILTER_MODULE_PATH!"
+if defined MAGICK_CONFIGURE_PATH set "APP_ENV=!APP_ENV!&& set MAGICK_CONFIGURE_PATH=!MAGICK_CONFIGURE_PATH!"
+if defined MAGICK_HOME set "APP_ENV=!APP_ENV!&& set MAGICK_HOME=!MAGICK_HOME!"
 if defined MAGICK_TEMPORARY_PATH (
   if defined APP_ENV (
     set "APP_ENV=!APP_ENV!&& set MAGICK_TEMPORARY_PATH=!MAGICK_TEMPORARY_PATH!"

@@ -33,7 +33,7 @@ import {
   type ReadinessReport,
   type RendererReadiness,
 } from './services/readiness';
-import { resolveMagick } from './services/magick-path';
+import { resolveMagick, applyMagickEnvironment, MAGICK_PROBE_ARGS } from './services/magick-path';
 import { locateAsset } from './services/asset-locator';
 import { writeJsonAtomic } from './services/write-json-atomic';
 import { collectBalanceWarnings } from './services/balance-warnings';
@@ -1375,6 +1375,10 @@ class ElectronApp {
     //    **開発機では通り、当日PC では必ず落ちる**という見え方になっていた。
     const resolution = resolveMagick([this.getBundleRoot()]);
     this.magickCommand = resolution.command;
+    // 🔴 携帯版はコーダーの置き場をレジストリから引けない（当日PCで実測）。
+    //    spawn の前に環境変数で教える（services/magick-path.ts の注釈）。
+    const magickEnv = applyMagickEnvironment(resolution);
+    for (const line of magickEnv) console.log('[ImageMagick] ' + line);
     // 🔴 **合成の一時ファイルもフォルダの中へ向ける。** 起動バッチも渡してくるが、
     //    WMI 経由の起動では届かないことがあり、直接ダブルクリックされた場合は
     //    そもそも誰も設定しない。既定のままだと %TEMP% に大きな中間画像が出て、
@@ -1394,21 +1398,29 @@ class ElectronApp {
     try {
       const { spawn } = await import('child_process');
       await new Promise<void>((resolve, reject) => {
+        // 🔴 **-version で確かめない。** コーダーを読み込まないので、
+        //    PNG を1枚も扱えない状態でも成功してしまう（実測 2026-09-10。
+        //    そのまま「★★★ 準備完了 ★★★」と出し、カードは0枚だった）。
+        //    実際に PNG を書かせる（services/magick-path.ts の MAGICK_PROBE_ARGS）。
         // shell: false。絶対パスに空白が入るので shell を挟むと壊れる
-        const proc = spawn(resolution.command, ['-version'], { shell: false });
+        const proc = spawn(resolution.command, MAGICK_PROBE_ARGS, {
+          shell: false,
+          stdio: 'ignore',
+        });
         proc.on('error', reject);
         proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
       });
       this.magickUsable = true;
-      console.log(`ImageMagick: OK (${resolution.from}) ${resolution.command}`);
+      console.log(`ImageMagick: OK (${resolution.from}) ${resolution.command} — PNG を書けました`);
     } catch (error) {
       this.magickUsable = false;
       console.error('ImageMagick(magick) を起動できません。記念カードは生成されません。', error);
       console.error('  探した場所: ' + (resolution.searched.join(' / ') || '(PATH のみ)'));
       this.warnAtStartup(
         'imagemagick-missing',
-        'ImageMagick を起動できません（' + resolution.command + '）。' +
-          '記念カードが1枚も作られません。当日PCでは bin\\ImageMagick\\magick.exe を使います。'
+        'ImageMagick で PNG を扱えません（' + resolution.command + '）。' +
+          '記念カードが1枚も作られません。' +
+          'modules\\coders が見つかっているか確認してください（詳しくは logs\\app.log）。'
       );
     }
   }

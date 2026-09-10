@@ -227,3 +227,117 @@ test('保持件数は設定の読み直しで反映される', () => {
   const calls = (main.match(/resultsManager\?\.updateConfig/g) || []).length;
   assert.ok(calls >= 2, 'reload-config と save-config の両方で反映していません（' + calls + ' か所）');
 });
+// ----------------------------------------------------------------
+// 7. 携帯版 ImageMagick が自分の部品を見つけられるか
+//
+// 🔴 当日PCで実測（2026-09-10）: インストールしていない機体では
+//    コーダー DLL の置き場をレジストリから引けず、
+//      RegistryKeyLookupFailed `CoderModulesPath'
+//      no decode delegate for this image format `...bg-card-rank-05-veteran.png'
+//    となって**記念カードが1枚も作られなかった**。画像生成は成功していたのに
+//    ランキングは「じゅんび中」のままだった。
+//    さらに点検が `magick -version` だったため**この状態でも通り**、
+//    起動バッチは「★★★ 準備完了 ★★★」と表示していた。
+// ----------------------------------------------------------------
+
+const { resolveMagick, applyMagickEnvironment, MAGICK_PROBE_ARGS } = require(
+  path.join(DIST, 'magick-path.js')
+);
+
+test('点検の引数は -version ではない（コーダーを読まないので壊れていても通る）', () => {
+  assert.ok(
+    !MAGICK_PROBE_ARGS.includes('-version'),
+    '-version で確かめています（PNG を1枚も扱えない状態を見逃します）'
+  );
+  // 実際に PNG を書かせること
+  assert.ok(
+    MAGICK_PROBE_ARGS.some((a) => String(a).includes('PNG:')),
+    'PNG を書かせていません'
+  );
+});
+
+test('携帯版なら コーダー／フィルタ／設定の置き場を環境変数へ入れる', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kidspg-magick-'));
+  const home = path.join(dir, 'bin', 'ImageMagick');
+  fs.mkdirSync(path.join(home, 'modules', 'coders'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'modules', 'filters'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'colors.xml'), '<x/>');
+  fs.writeFileSync(path.join(home, 'magick.exe'), 'x');
+
+  const saved = { ...process.env };
+  for (const k of [
+    'KIDSPG_MAGICK',
+    'MAGICK_CODER_MODULE_PATH',
+    'MAGICK_FILTER_MODULE_PATH',
+    'MAGICK_CONFIGURE_PATH',
+    'MAGICK_HOME',
+  ]) {
+    delete process.env[k];
+  }
+  try {
+    const resolution = resolveMagick([dir]);
+    assert.strictEqual(resolution.from, 'portable', '携帯版として解決していません');
+    assert.strictEqual(resolution.home, home, 'home がずれています');
+
+    applyMagickEnvironment(resolution);
+    assert.strictEqual(process.env.MAGICK_CODER_MODULE_PATH, path.join(home, 'modules', 'coders'));
+    assert.strictEqual(process.env.MAGICK_FILTER_MODULE_PATH, path.join(home, 'modules', 'filters'));
+    assert.strictEqual(process.env.MAGICK_CONFIGURE_PATH, home);
+    assert.strictEqual(process.env.MAGICK_HOME, home);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PATH 任せのときは環境変数を触らない（開発機の設定を壊さない）', () => {
+  const saved = process.env.MAGICK_CODER_MODULE_PATH;
+  delete process.env.MAGICK_CODER_MODULE_PATH;
+  const savedEnv = process.env.KIDSPG_MAGICK;
+  delete process.env.KIDSPG_MAGICK;
+  try {
+    const resolution = resolveMagick([path.join(os.tmpdir(), 'kidspg-nowhere-' + Date.now())]);
+    assert.strictEqual(resolution.from, 'PATH');
+    assert.strictEqual(resolution.home, null);
+    assert.deepStrictEqual(applyMagickEnvironment(resolution), []);
+    assert.strictEqual(process.env.MAGICK_CODER_MODULE_PATH, undefined);
+  } finally {
+    if (saved !== undefined) process.env.MAGICK_CODER_MODULE_PATH = saved;
+    if (savedEnv !== undefined) process.env.KIDSPG_MAGICK = savedEnv;
+  }
+});
+
+test('起動時の点検は実際に PNG を書かせる', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.ts'), 'utf-8');
+  const fn = src.slice(src.indexOf('private async checkImageMagick'));
+  const body = fn.slice(0, fn.indexOf('\r\n  }'));
+  assert.match(body, /MAGICK_PROBE_ARGS/, '点検が PNG を書かせていません');
+  assert.ok(!/\['-version'\]/.test(body), '-version で確かめています');
+  // 点検の前に環境を整えること（順番が逆だと最初の1回が落ちる）
+  const envAt = body.indexOf('applyMagickEnvironment');
+  const probeAt = body.indexOf('MAGICK_PROBE_ARGS');
+  assert.ok(envAt > 0 && envAt < probeAt, '環境を整える前に点検しています');
+});
+
+test('起動バッチと 0_セットアップ.bat も PNG を書かせて確かめる', () => {
+  for (const rel of ['start-kidspg.bat', 'tools/onsite/0_setup.bat']) {
+    const bat = fs.readFileSync(path.join(ROOT, rel), 'utf-8');
+    assert.match(bat, /-size 4x4 xc:white PNG:-/, rel + ' が PNG を書かせていません');
+    assert.match(bat, /MAGICK_CODER_MODULE_PATH/, rel + ' がコーダーの置き場を教えていません');
+  }
+});
+
+test('救済ツールの事前確認も PNG を書かせる', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'test', 'memorial-card-recovery.ts'), 'utf-8');
+  assert.match(src, /MAGICK_PROBE_ARGS/, '-version のままです');
+  assert.match(src, /applyMagickEnvironment/, 'コーダーの置き場を教えていません');
+});
+
+test('生成にかかった秒数をログに残す（当日の人数計算に要る）', () => {
+  const src = fs.readFileSync(
+    path.join(ROOT, 'src', 'main', 'workers', 'comfyui-worker.ts'),
+    'utf-8'
+  );
+  assert.match(src, /生成完了 \$\{datetime\}: \$\{elapsedSec\} 秒/, '秒数を出していません');
+});

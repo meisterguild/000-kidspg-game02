@@ -17,6 +17,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { NodeMemorialCardService } from './node-memorial-card-service';
+import { resolveMagick, applyMagickEnvironment, MAGICK_PROBE_ARGS } from '../main/services/magick-path';
 import { verifyPngFile } from '../main/services/png-integrity';
 import { acquireMaintenanceLock } from '../main/services/card-output';
 import type { GameResult } from '../shared/types';
@@ -224,6 +225,9 @@ class MemorialCardRecovery {
           `\n   当日PCでは実物は C:\\kidspg\\app\\card_base_images です`
         );
       }
+
+      // 携帯版のコーダーの置き場を環境変数で教える（上と同じ理由）
+      applyMagickEnvironment(resolveMagick([roots.materialRoot]));
 
       this.memorialCardService = new NodeMemorialCardService(
         config.memorialCard,
@@ -683,8 +687,15 @@ export const checkCompose = async (): Promise<{ ok: boolean; lines: string[] }> 
   //    **合成は実際に通るのに点検だけが「起動できません」と言い、
   //    retry-failed が救済を止める**（敵対的レビュー 2026-09-09 の指摘）。
   const magickCommand = service.getMagickCommand();
-  const probe = spawnSync(magickCommand, ['-version'], {
-    encoding: 'utf8',
+  // 🔴 携帯版はコーダーの置き場をレジストリから引けない（当日PCで実測 2026-09-10）。
+  //    spawn の前に環境変数で教える。
+  for (const line of applyMagickEnvironment(resolveMagick([roots.materialRoot]))) {
+    lines.push('OK : ' + line);
+  }
+  // 🔴 **-version で確かめない。** コーダーを読み込まないので、PNG を1枚も
+  //    扱えない状態でも成功する（実測。そのまま「準備完了」と出てカードは0枚だった）。
+  const probe = spawnSync(magickCommand, MAGICK_PROBE_ARGS, {
+    encoding: 'buffer',
     shell: false,
     timeout: 30_000,
   });
@@ -697,7 +708,7 @@ export const checkCompose = async (): Promise<{ ok: boolean; lines: string[] }> 
     return { ok: false, lines };
   }
   lines.push(`OK : magick の場所 : ${magickCommand}`);
-  lines.push(`OK : ${(probe.stdout || '').split(/\r?\n/)[0]}`);
+  lines.push('OK : PNG を書けました');
   return { ok: true, lines };
 };
 

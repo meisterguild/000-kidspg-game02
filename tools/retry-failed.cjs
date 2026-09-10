@@ -363,13 +363,30 @@ const RECOVERY_JS = path.join(ROOT, 'dist', 'main', 'test', 'memorial-card-recov
  * **PATH には入っていない**（start-kidspg.bat がアプリ起動の間だけ足している）。
  * 別ウィンドウで動く救済ツールからは見えないので、ここでも足す。
  */
+/**
+ * 🔴 携帯版 ImageMagick は**コーダー DLL の置き場をレジストリから引く**。
+ * インストールしていない当日PCではキーが無く、PNG を1枚も読めない
+ * （当日PCで実測 2026-09-10: RegistryKeyLookupFailed → カードが0枚）。
+ * PATH を通すだけでは足りないので、置き場も環境変数で渡す。
+ */
 const withMagickPath = (env) => {
   for (const dir of [
     path.join(ROOT, '..', 'bin', 'ImageMagick'), // 配布された ops から見た場所
     path.join(ROOT, 'bin', 'ImageMagick'),
   ]) {
     if (fs.existsSync(path.join(dir, 'magick.exe'))) {
-      return { ...env, PATH: dir + path.delimiter + (env.PATH || '') };
+      const next = {
+        ...env,
+        PATH: dir + path.delimiter + (env.PATH || ''),
+        KIDSPG_MAGICK: path.join(dir, 'magick.exe'),
+        MAGICK_HOME: dir,
+      };
+      const coders = path.join(dir, 'modules', 'coders');
+      if (fs.existsSync(coders)) next.MAGICK_CODER_MODULE_PATH = coders;
+      const filters = path.join(dir, 'modules', 'filters');
+      if (fs.existsSync(filters)) next.MAGICK_FILTER_MODULE_PATH = filters;
+      if (fs.existsSync(path.join(dir, 'colors.xml'))) next.MAGICK_CONFIGURE_PATH = dir;
+      return next;
     }
   }
   return env;
