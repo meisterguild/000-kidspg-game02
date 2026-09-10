@@ -117,3 +117,6 @@ card_base_images/superseded_*/
 # Electron の実行時データ（当日PCでフォルダ完結させるためアプリ配下へ寄せた）。
 # Chromium の Cache / GPUCache / Local Storage など。配布物には入れない
 /appdata/
+
+# 診断と修復.bat が残す実行ログ（バッチと同じ場所に出る）
+診断ログ_*.txt
