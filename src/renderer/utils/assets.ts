@@ -301,8 +301,27 @@ export const initializeAudioSystem = async (): Promise<void> => {
   }
 };
 
-// 音声を再生する関数
-export const playSound = async (soundKey: keyof typeof SOUND_ASSET_RELATIVE_PATHS, volume: number = 0.7): Promise<void> => {
+/**
+ * 音声を再生する。
+ *
+ * `rate` は再生速度＝音の高さ。同じ音でも連続で少しずつ上げると
+ * 「食べ進めている」感じが出る（グミを食べる音で使っている）。
+ * 音声要素はキーごとに1つを使い回すので、毎回明示的に設定しておく。
+ * 指定しなければ従来どおり等速。
+ *
+ * `overlap` を立てると、**使い回しの要素ではなく複製を鳴らす**。
+ * 通常の経路は `currentTime = 0` で巻き戻すため、鳴り終わる前に次を鳴らすと
+ * 前の音が切れる。一本道の盤面では選択肢が1つなので子どもが連打でき、
+ * 音が鳴り切る前に巻き戻り続けて**効果音が出ていないように聞こえた**
+ * （2026-09-09 の指摘）。連続で鳴らす短い効果音だけ複製して重ねる。
+ * 複製は再生が終われば参照が切れて回収される。
+ */
+export const playSound = async (
+  soundKey: keyof typeof SOUND_ASSET_RELATIVE_PATHS,
+  volume: number = 0.7,
+  rate: number = 1,
+  overlap: boolean = false
+): Promise<void> => {
   
   // ユーザー操作によるAudioContextの初期化を試みる
   await initializeAudioSystem();
@@ -319,10 +338,14 @@ export const playSound = async (soundKey: keyof typeof SOUND_ASSET_RELATIVE_PATH
   }
 
   try {
-    const audio = assetManager.sounds[soundKey];
+    const shared = assetManager.sounds[soundKey];
+    // 重ねて鳴らす場合は複製を使う（使い回しの要素を巻き戻すと前の音が切れる）
+    const audio = overlap ? (shared.cloneNode() as HTMLAudioElement) : shared;
 
     audio.muted = false;
     audio.volume = Math.max(0, Math.min(1, volume)); // 0も許容
+    // 極端な値は音が壊れるので常識的な範囲に収める
+    audio.playbackRate = Math.max(0.5, Math.min(2, rate));
     audio.currentTime = 0;
 
     

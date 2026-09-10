@@ -174,6 +174,8 @@ interface JobData {
   datetime: string;
   resultDir: string;
   preUploadedFilename?: string;
+  /** 何回目の試行か（1 が初回）。config.retry.maxAttempts まで作り直しを試す */
+  attempt?: number;
 }
 
 interface ActiveJob {
@@ -182,6 +184,8 @@ interface ActiveJob {
   resultDir: string;
   startTime: number;
   status: 'uploading' | 'processing' | 'completed' | 'error';
+  /** 失敗したときに作り直せるよう、投入元のジョブを持っておく */
+  source: JobData;
 }
 
 class ComfyUIWorker {
@@ -370,6 +374,59 @@ class ComfyUIWorker {
     }
   }
 
+  /**
+   * 失敗したジョブを作り直すか、諦めて job-error を投げるかを決める。
+   *
+   * `config.retry` は設定に書かれていながら**参照しているコードが無かった**
+   * （config.json に「未実装」と注記があった）。1枚失敗すると、その子のカードは
+   * プレースホルダのまま当日中は復旧しない。事後の tools/retry-failed.cjs しか
+   * 手が無かったので、保険としてここで作り直す（2026-09-09 の依頼）。
+   *
+   * 🔴 **キュー期限の超過では作り直さない。** 期限切れは「ComfyUI が詰まっていて
+   * 15分待っても順番が来なかった」状態で、詰まりの原因は後続のジョブが溜まっていること。
+   * そこへ同じジョブを積み直すと、待っている全員の生成をさらに遅らせる。
+   * 作り直すのは通信の失敗・投入の失敗・出力の取りこぼしに限る。
+   */
+  private retryOrFail(job: JobData, error: unknown, retryable: boolean): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const attempt = job.attempt ?? 1;
+    const maxAttempts = Math.max(1, this.config.retry?.maxAttempts ?? 1);
+
+    if (!retryable || attempt >= maxAttempts) {
+      if (retryable) {
+        console.error(
+          `ComfyUI Worker - ${job.datetime} は ${attempt} 回試して作れませんでした: ${message}`
+        );
+      }
+      this.sendJobProgress(job.datetime, 'job-error', { error: message });
+      return;
+    }
+
+    const delay = Math.max(0, this.config.retry?.delayMs ?? 1000);
+    console.warn(
+      `ComfyUI Worker - ${job.datetime} の生成に失敗したので作り直します `
+      + `(${attempt}/${maxAttempts}, ${delay}ms 後): ${message}`
+    );
+    // 進捗はレンダラーへ出す。当日ログを見なくても「やり直している」と分かるように
+    this.sendJobProgress(job.datetime, 'job-queue-update', {
+      position: this.jobQueue.length + 1,
+      message: `生成に失敗したため作り直します（${attempt + 1}回目）`,
+    });
+
+    setTimeout(() => {
+      // 🔴 **先渡しのファイル名は捨てて、上げ直させる。**
+      // 作り直しに回るのは「ComfyUI が再起動された（プロンプトがキューにも
+      // 履歴にも無い）」「通信が続けて失敗した」「出力を取りこぼした」のように、
+      // **サーバ側の状態が疑わしい**ケースばかりで、先に上げた input が
+      // まだあるとは限らない。300x300 の PNG を 127.0.0.1 へ送り直すだけなので
+      // 費用は無視できる（uploadImage は job.imageData から毎回作れる）。
+      const retryJob: JobData = { ...job, attempt: attempt + 1 };
+      delete retryJob.preUploadedFilename;
+      this.jobQueue.push(retryJob);
+      if (!this.isProcessing) this.processQueue();
+    }, delay);
+  }
+
   private async processQueue(): Promise<void> {
 
     if (this.isProcessing || this.jobQueue.length === 0) {
@@ -418,7 +475,8 @@ class ComfyUIWorker {
         datetime: job.datetime,
         resultDir: job.resultDir,
         startTime: Date.now(),
-        status: 'processing'
+        status: 'processing',
+        source: job,
       });
 
       this.sendJobProgress(job.datetime, 'job-processing', { 
@@ -430,9 +488,8 @@ class ComfyUIWorker {
 
     } catch (error) {
       console.error(`ComfyUI Worker - processJob failed for ${job.id}:`, error);
-      this.sendJobProgress(job.datetime, 'job-error', { 
-        error: error instanceof Error ? error.message : String(error) 
-      });
+      // アップロードと投入の失敗は作り直す価値がある（通信の一時的な失敗が多い）
+      this.retryOrFail(job, error, true);
     }
   }
 
@@ -667,9 +724,9 @@ class ComfyUIWorker {
           console.warn(`ComfyUI Worker - キュー削除に失敗: ${e}`);
         });
         this.settleJob(datetime);
-        this.sendJobProgress(datetime, 'job-error', {
-          error: error instanceof Error ? error.message : String(error)
-        });
+        // 期限切れは作り直さない（詰まっているキューに積み直すと全員が遅れる）。
+        // 通信の失敗は作り直す。
+        this.retryOrFail(job.source, error, !expired);
       }
     };
 
@@ -752,10 +809,18 @@ class ComfyUIWorker {
       });
 
     } catch (error) {
+      // 作り直しのために、activeJobs を消す前に投入元を取っておく
+      const source = this.activeJobs.get(datetime)?.source;
       this.settleJob(datetime);
-      this.sendJobProgress(datetime, 'job-error', { 
-        error: error instanceof Error ? error.message : String(error) 
-      });
+      // 出力の取りこぼしや保存の失敗は作り直す価値がある
+      // （生成そのものは終わっているので、もう一度回せば取れることが多い）
+      if (source) {
+        this.retryOrFail(source, error, true);
+      } else {
+        this.sendJobProgress(datetime, 'job-error', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
     }
   }
 

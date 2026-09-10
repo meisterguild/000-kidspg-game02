@@ -21,6 +21,7 @@ const ResultPage: React.FC = () => {
     capturedImage,
     resultDir,
     resetGameState,
+    boardMode,
   } = useGameSession();
 
   const [level, setLevel] = useState<GameLevel | '' >('');
@@ -56,10 +57,16 @@ const ResultPage: React.FC = () => {
     if (!config) return; // configが読み込まれるまで待機
     
     const levelValue = calculateLevel(gameScore, config.game.levelUpScoreInterval);
-    const rankValue = calculateRank(gameScore, config.game.rankThresholds);
+    // 平面は1面あたりのグミが立方体の約1/3なので、立方体の閾値だとランクが上がらず
+    // 上位のカード意匠が一枚も出ない。平面専用の閾値へ切り替える
+    // （config.game.plane.rankThresholds。無ければ立方体の値に倒す）。
+    const thresholds = boardMode === 'plane'
+      ? (config.game.plane?.rankThresholds ?? config.game.rankThresholds)
+      : config.game.rankThresholds;
+    const rankValue = calculateRank(gameScore, thresholds);
     setLevel(levelValue);
     setRank(rankValue);
-  }, [gameScore, config]);
+  }, [gameScore, config, boardMode]);
 
   /**
    * 保存の失敗を受けたときの振る舞い。

@@ -113,6 +113,19 @@
        2px 2px 0 #fff, -2px 2px 0 #fff, 2px -2px 0 #fff, -2px -2px 0 #fff;
   }
 
+  /* ゲーム画面 HUD のラベルと説明文。
+     数値は .gold-heading（白フチつき）で読めていたが、ラベル側は
+     半透明の茶色だけだったため金色の背景に沈んでいた
+     （「のこり時間」「たべた」「ステージ」「スコア」「クリア」と右列の説明。
+      2026-09-08 の動作確認で指摘）。
+     見出しほど太くしたくないので、フチは 1px に留める。 */
+  .hud-label {
+    @apply font-bold text-amber-950;
+    text-shadow:
+       1px 0 0 #fff, -1px 0 0 #fff, 0 1px 0 #fff, 0 -1px 0 #fff,
+       1px 1px 0 #fff, -1px 1px 0 #fff, 1px -1px 0 #fff, -1px -1px 0 #fff;
+  }
+
   /* カウントダウン画面の見出し。黄色地でも読めるよう濃色＋白フチにする */
   .countdown-lead {
     @apply text-mg-brand-600;

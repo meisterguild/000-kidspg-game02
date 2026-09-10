@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import GummyBoard from './GummyBoard';
-import { DIFFICULTY, generateStage, movableFrom } from './core';
+import { DIFFICULTY, PLANE_FACES, generateStage, movableFrom } from './core';
 import { playSound } from '../../utils/assets';
 import { useWideLayout } from '../../hooks/useWideLayout';
 import ShinyWaveBackground from '../../components/ShinyWaveBackground';
@@ -39,24 +39,37 @@ export const DEFAULT_PARTIAL_SCORE_RATE = 0;
 const CLEAR_DELAY_MS = 1500;
 /** 同じグミを続けて叩いたとき、無効フィードバックを出さない猶予 */
 const REPEAT_TAP_GRACE_MS = 400;
+/** グミを食べる音の音程（半音）。長音階のペンタトニックを巡回させる */
+const EAT_PITCH_STEPS = [0, 2, 4, 7, 9];
 
 const formatTime = (sec) => {
   const s = Math.max(0, Math.ceil(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
-export default function GummyGame({ config, onScoreChange, onLevelChange, onGameOver, onEscape }) {
+export default function GummyGame({ config, boardMode = 'cube', onScoreChange, onLevelChange, onGameOver, onEscape }) {
   // 横に余白のある画面（PCモニタ）では HUD を左右へ逃がし、盤面を縦いっぱいに使う
   const wide = useWideLayout();
   const gameConf = config?.game || {};
+
+  /* --- 盤面の作り ---
+     plane は立方体の3面ではなく正面1面だけを使う（3歳以上を対象に加えたため）。
+     ステージ進行と繰り返しの設定は config.game.plane に分けて持つ。
+     🔴 **立方体側の設定には触らない。** plane が無い・cube のときは
+     従来どおり config.game.* をそのまま読む。 */
+  const plane = boardMode === 'plane' ? (gameConf.plane || null) : null;
+  const faces = plane ? PLANE_FACES : undefined;
+  const conf = plane || gameConf;
+
   const progression = useMemo(() => {
-    const p = gameConf.stageProgression;
+    const p = conf.stageProgression;
     return Array.isArray(p) && p.length ? p : DEFAULT_STAGE_PROGRESSION;
-  }, [gameConf.stageProgression]);
+  }, [conf.stageProgression]);
+  // 制限時間と部分点率は平面でも共通（1プレイ120秒の枠は変えない）
   const timeLimit = gameConf.timeLimitSeconds ?? DEFAULT_TIME_LIMIT_SECONDS;
   const partialRate = gameConf.partialScoreRate ?? DEFAULT_PARTIAL_SCORE_RATE;
-  const repeatLast = gameConf.repeatLastStage !== false;
-  const maxStages = gameConf.maxStages ?? DEFAULT_MAX_STAGES;
+  const repeatLast = conf.repeatLastStage !== false;
+  const maxStages = conf.maxStages ?? DEFAULT_MAX_STAGES;
 
   const planAt = useCallback((i) => {
     // maxStages は「保険の上限」。0 以下なら上限なし＝**時間切れだけが終了条件**になる。
@@ -70,7 +83,7 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
   const [stageIndex, setStageIndex] = useState(0);
   const [game, setGame] = useState(() => {
     const plan = progression[0];
-    const stage = generateStage(plan.size, plan.difficulty);
+    const stage = generateStage(plan.size, plan.difficulty, faces);
     return { stage, path: [stage.start] };
   });
   const [clearedCount, setClearedCount] = useState(0);
@@ -88,6 +101,8 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
   const curRef = useRef(null);
   const finishedAtRef = useRef(0);
   const giveUpRef = useRef(null);
+  // 食べる音の音程を進める位置。もどす・やりなおす・面の切り替えで最初へ戻す
+  const comboRef = useRef(0);
   // 各コールバックから最新の値を読むための箱。レンダーごとに詰め替える。
   const liveRef = useRef({});
 
@@ -194,7 +209,11 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
   const undo = useCallback(() => {
     if (finishedRef.current || advancingRef.current) return;
     setGame((g) => (g.path.length > 1 ? { ...g, path: g.path.slice(0, -1) } : g));
-    playSound('sound7', 0.5).catch(() => {});
+    comboRef.current = 0;
+    // sound7 は音源自体が長く（150KB）、もどす操作に対して間延びしていた
+    // （2026-09-08 の動作確認）。食べる音を低く鳴らして「戻した」を短く示す。
+    // 別の音に替えたいときは action.mp3（未使用・6KB）が使える。
+    playSound('paltu', 0.5, 0.6).catch(() => {});
   }, []);
 
   /**
@@ -205,8 +224,9 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
   const restart = useCallback(() => {
     if (finishedRef.current || advancingRef.current) return;
     const p = liveRef.current.plan;
-    const next = generateStage(p.size, p.difficulty);
+    const next = generateStage(p.size, p.difficulty, liveRef.current.faces);
     setGame({ stage: next, path: [next.start] });
+    comboRef.current = 0;
     playSound('buttonClick', 0.5).catch(() => {});
   }, []);
 
@@ -218,16 +238,29 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
 
   giveUpRef.current = giveUp;
 
-  /** キャラクターが移動を終えた（または次の移動で上書きされた）タイミングで音を鳴らす */
+  /**
+   * キャラクターが移動を終えた（または次の移動で上書きされた）タイミングで音を鳴らす。
+   *
+   * 音量 0.5 のままだと会場で聞こえず「効果音が無い」と感じられた
+   * （2026-09-08 の動作確認）。上げたうえで、**食べるたびに音程を上げる**。
+   * 連続で食べると音階が登っていくので、手が止まらない気持ちよさが出る。
+   * 音階は長音階のペンタトニック（0・2・4・7・9 半音）を巡回させる。
+   * 巡回させるのは、上げ続けると数手で不快な高音になるため。
+   */
   const handleLanded = useCallback((crossedFace) => {
-    playSound(crossedFace ? 'jump' : 'paltu', 0.5).catch(() => {});
+    const step = EAT_PITCH_STEPS[comboRef.current % EAT_PITCH_STEPS.length];
+    comboRef.current += 1;
+    const rate = Math.pow(2, step / 12);
+    // 第4引数は「重ねて鳴らす」。連打すると前の音を巻き戻して消してしまい、
+    // 一本道の盤面では効果音が出ていないように聞こえた（2026-09-09 の指摘）
+    playSound(crossedFace ? 'jump' : 'paltu', 0.9, rate, true).catch(() => {});
   }, []);
 
   /* --- クリア → 次ステージ --- */
   // 依存は cleared のみに絞り、必要な値は ref から読む。
   // 依存配列が動いて cleanup が走ると advancingRef が立ったまま
   // タイマーだけ消えて進行不能になるため。
-  liveRef.current = { total, plan, stageIndex, planAt, baseScore, finish };
+  liveRef.current = { total, plan, stageIndex, planAt, baseScore, finish, faces };
 
   useEffect(() => {
     if (!cleared || finishedRef.current || advancingRef.current) return;
@@ -252,7 +285,8 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
         l.finish(l.baseScore + gained);
         return;
       }
-      const nextStage = generateStage(nextPlan.size, nextPlan.difficulty);
+      const nextStage = generateStage(nextPlan.size, nextPlan.difficulty, l.faces);
+      comboRef.current = 0;
       setStageIndex(nextIndex);
       setGame({ stage: nextStage, path: [nextStage.start] });
       advancingRef.current = false;
@@ -286,13 +320,17 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
 
   /* --- 表示 --- */
   const eaten = path.length;
+  // プレイ中は長い文を読まない前提で、一目で入る短さにする
+  // （2026-09-08 の動作確認）。何を押すかはボタン側の記号で示す。
+  //
+  // 「あと1つ！ GOAL へ」は出さない。画面中央に置くと GOAL 札に被り、
+  // いちばん見せたいものを隠していた（2026-09-08 の指摘）。
+  // 残り1つの合図は、盤面側で GOAL 札を膨らませて出す（GummyBoard）。
   const status = cleared
     ? { tone: 'clear', text: 'ぜんぶ食べた！ CLEAR' }
     : deadEnd
-      ? { tone: 'stuck', text: '進める先がなくなりました。1手もどすか、やりなおせます' }
-      : movable.has(stage.goal)
-        ? { tone: 'goal', text: 'のこり1つ。ゴールのグミが開きました' }
-        : null;
+      ? { tone: 'stuck', text: 'いきどまり！ ↩ でもどろう' }
+      : null;
 
   const urgent = remain <= 30;
   const progressPct = Math.round((eaten / total) * 100);
@@ -300,32 +338,38 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
 
   /* --- HUD 部品（左右レイアウトと重ねレイアウトで共用） --- */
   const controlsDisabled = finished || cleared;
-  const btnBase = 'rounded-xl border font-bold transition-colors disabled:opacity-30';
+  // whitespace-nowrap は必須。左右のHUD列は 210〜300px しかなく、
+  // 「1手もどす」が2行に折り返れていた（2026-09-08 の動作確認）。
+  const btnBase = 'rounded-xl border font-bold transition-colors disabled:opacity-30 whitespace-nowrap';
   const controls = (
     <>
+      {/* 3つとも同じ白いボタンだったため、いちばん使う「1手もどす」が
+          他に埋もれていた（2026-09-08 の動作確認）。
+          もどす＝主・やりなおす＝副・おわる＝控えの順に見た目を分け、
+          記号を添えて文字を読まなくても意味が取れるようにする。 */}
       <button
         onClick={undo}
         disabled={path.length <= 1 || controlsDisabled}
-        className={`${btnBase} bg-white/85 hover:bg-white text-amber-950 border-white shadow-md ${
+        className={`${btnBase} bg-amber-300 hover:bg-amber-200 text-amber-950 border-amber-500 shadow-lg ${
           wide ? 'w-full px-5 py-5 text-2xl' : 'px-5 py-3 text-xl'
         }`}
       >
-        1手もどす
+        <span aria-hidden="true" className="mr-2">↩</span>1手もどす
       </button>
       <button
         onClick={restart}
         disabled={controlsDisabled}
-        className={`${btnBase} bg-white/85 hover:bg-white text-amber-950 border-white shadow-md ${
-          wide ? 'w-full px-5 py-5 text-2xl' : 'px-5 py-3 text-xl'
+        className={`${btnBase} bg-white/90 hover:bg-white text-amber-950 border-white shadow-md ${
+          wide ? 'w-full px-5 py-4 text-xl' : 'px-5 py-3 text-lg'
         }`}
       >
-        やりなおす
+        <span aria-hidden="true" className="mr-2">⟳</span>やりなおす
       </button>
       <button
         onClick={giveUp}
         disabled={controlsDisabled}
-        className={`${btnBase} bg-white/60 hover:bg-white/80 text-amber-900 border-white/80 ${
-          wide ? 'w-full px-4 py-4 text-xl' : 'px-4 py-3 text-base'
+        className={`${btnBase} bg-white/50 hover:bg-white/70 text-amber-900 border-white/70 ${
+          wide ? 'w-full px-4 py-3 text-base' : 'px-4 py-2 text-sm'
         }`}
       >
         おわる
@@ -349,9 +393,7 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
       } ${
         status.tone === 'clear'
           ? 'bg-amber-300/90 text-amber-950'
-          : status.tone === 'stuck'
-            ? 'bg-slate-900/80 text-slate-100'
-            : 'bg-yellow-200/90 text-yellow-900'
+          : 'bg-slate-900/80 text-slate-100'
       }`}
     >
       {status.text}
@@ -368,6 +410,7 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
       onReject={reject}
       onLanded={handleLanded}
       shakeRef={shakeRef}
+      plane={!!plane}
       {...extra}
     />
   );
@@ -383,10 +426,10 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
           {/* 左：残り時間・進行・スコア */}
           <aside
             className="shrink-0 flex flex-col justify-center gap-7 px-5 py-6 text-amber-950"
-            style={{ width: 'clamp(210px, 16vw, 300px)' }}
+            style={{ width: 'clamp(240px, 19vw, 320px)' }}
           >
             <div>
-              <div className="text-base tracking-widest text-amber-900/80 mb-1">のこり時間</div>
+              <div className="hud-label text-lg tracking-widest mb-1">のこり時間</div>
               <div
                 className={`gold-heading tabular-nums leading-none ${urgent ? 'text-red-700' : 'text-orange-900'}`}
                 style={{ fontSize: 'clamp(3.25rem, 6vw, 5.2rem)' }}
@@ -397,28 +440,34 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
 
             <div>
               <div className="flex items-baseline gap-2 tabular-nums mb-1">
-                <span className="text-base tracking-widest text-amber-900/80">たべた</span>
+                <span className="hud-label text-lg tracking-widest">たべた</span>
                 <span className="ml-auto">
-                  <span className="text-3xl font-bold">{eaten}</span>
-                  <span className="text-amber-900/70 text-lg"> / {total}</span>
+                  <span className="gold-heading text-3xl">{eaten}</span>
+                  <span className="hud-label text-lg"> / {total}</span>
                 </span>
               </div>
               {progressBar}
-              <div className="mt-2 text-base text-amber-900">
-                ステージ {stageIndex + 1}・{diffLabel}・{plan.size}×{plan.size}
+              {/* 1行に詰めると「ステージ 1・Very Easy・4×4」が折り返る。
+                  子どもが見るのはステージ番号だけなので、難易度と盤の大きさは
+                  小さく2行目へ落とす（2026-09-08 の動作確認）。 */}
+              <div className="hud-label mt-2 text-base leading-tight">
+                ステージ {stageIndex + 1}
+              </div>
+              <div className="hud-label text-xs leading-tight opacity-90">
+                {diffLabel}・{plan.size}×{plan.size}
               </div>
             </div>
 
             <div className="border-t border-amber-900/25 pt-5 space-y-3">
               <div>
-                <div className="text-base tracking-widest text-amber-900/80">スコア</div>
+                <div className="hud-label text-lg tracking-widest">スコア</div>
                 <div className="gold-heading text-4xl tabular-nums leading-tight text-orange-700">{shownScore}</div>
               </div>
               <div>
-                <div className="text-base tracking-widest text-amber-900/80">クリア</div>
+                <div className="hud-label text-lg tracking-widest">クリア</div>
                 <div className="gold-heading text-3xl tabular-nums leading-tight text-green-700">
                   {clearedCount}
-                  <span className="text-lg font-medium text-amber-900/80"> ステージ</span>
+                  <span className="hud-label text-lg"> ステージ</span>
                 </div>
               </div>
             </div>
@@ -437,17 +486,19 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
           {/* 右：操作と説明 */}
           <aside
             className="shrink-0 flex flex-col justify-center gap-3 px-5 py-6"
-            style={{ width: 'clamp(210px, 16vw, 300px)' }}
+            style={{ width: 'clamp(240px, 19vw, 320px)' }}
           >
-            <div className="gold-heading text-xl mb-2 leading-snug">
-              つながったグミをぜんぶ食べて、ゴールをめざそう！
+            {/* 3行に伸びて読まれないので2行に詰めた（2026-09-08 の動作確認）。
+                「光る＝押せる」と「GOAL が目的地」の2つだけ伝える。 */}
+            <div className="gold-heading text-2xl mb-3 leading-snug">
+              光るグミをクリック！<br />GOAL をめざそう
             </div>
             {controls}
-            <div className="mt-3 text-base leading-relaxed text-amber-900 space-y-1">
-              <p>光っているグミを タップ（クリック）で すすむ</p>
-              <p>まちがえたら「1手もどす」</p>
-              <p>こまったら「やりなおす」</p>
-              <p>とちゅうでやめるときは「おわる」</p>
+            {/* 4行あった操作説明は畳んだ。プレイ中に読まれないため
+                （2026-09-08 の動作確認）。意味はボタンのラベルと記号で示し、
+                ここは「困ったときに何を押すか」の1行だけ残す。 */}
+            <div className="hud-label mt-3 text-base leading-relaxed">
+              こまったら「やりなおす」
             </div>
           </aside>
         </div>
@@ -465,10 +516,10 @@ export default function GummyGame({ config, onScoreChange, onLevelChange, onGame
                 {formatTime(remain)}
               </div>
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 text-amber-950 text-base tabular-nums font-bold">
-                  <span className="font-bold">{eaten}</span>
-                  <span className="text-amber-900/70">/ {total}</span>
-                  <span className="ml-auto text-sm text-amber-900">
+                <div className="flex items-center gap-2 text-base tabular-nums">
+                  <span className="hud-label">{eaten}</span>
+                  <span className="hud-label">/ {total}</span>
+                  <span className="hud-label ml-auto text-sm">
                     ステージ {stageIndex + 1}・{diffLabel}・{plan.size}×{plan.size}
                   </span>
                 </div>

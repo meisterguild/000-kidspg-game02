@@ -17,6 +17,11 @@ import { playSound } from '../utils/assets';
  * ・「終了」  … 終了確認ダイアログを出す（main プロセスの before-quit と同じ経路）
  * ・「設定」  … スタッフ用。**5回連続でクリックしたときだけ**開く。
  *   子どもが誤って触って記録を消さないようにするため、1回では反応させない。
+ * ・「へいめん」… スタッフ用。3歳前後の子が来たときに、立方体ではなく
+ *   平面1面の盤で遊ばせる。**押した1プレイだけ有効**で、次の子には持ち越さない
+ *   （持続するトグルだと「戻し忘れで午後ずっと平面のまま」が起きうる）。
+ *   「はじめる」の横ではなくここへ置くのは、子どもの手と視線が画面中央の
+ *   大きな「はじめる」へ向くため。並べると押し間違える位置になる。
  */
 
 /** 設定画面を開くのに必要なクリック回数。増やすほど誤爆しにくいが、スタッフの手間も増える */
@@ -26,7 +31,7 @@ const STAFF_TAP_WINDOW_MS = 2500;
 
 export const NavBar: React.FC = () => {
   const { currentScreen, setCurrentScreen } = useScreen();
-  const { resetGameState } = useGameSession();
+  const { resetGameState, boardMode, setBoardMode } = useGameSession();
   const [staffTaps, setStaffTaps] = useState(0);
   const lastTapAt = useRef(0);
 
@@ -38,6 +43,11 @@ export const NavBar: React.FC = () => {
     setCurrentScreen('TOP');
     resetGameState();
   }, [setCurrentScreen, resetGameState]);
+
+  const togglePlane = useCallback(() => {
+    playSound('paltu');
+    setBoardMode(boardMode === 'plane' ? 'cube' : 'plane');
+  }, [boardMode, setBoardMode]);
 
   const handleExit = useCallback(() => {
     playSound('buttonClick');
@@ -85,6 +95,25 @@ export const NavBar: React.FC = () => {
           aria-label="ランキングを別ウィンドウで表示"
         >
           ランキング
+        </button>
+      )}
+
+      {/* スタッフ用。3歳前後の子のときだけ平面へ。押した1プレイだけ有効 */}
+      {currentScreen === 'TOP' && (
+        <button
+          type="button"
+          onClick={togglePlane}
+          className={`px-3 py-2 rounded-xl text-sm font-bold border shadow transition-transform hover:scale-105 ${
+            boardMode === 'plane'
+              ? 'bg-amber-400 text-amber-950 border-amber-600'
+              : 'bg-white/50 hover:bg-white/80 text-game-text border-white/70'
+          }`}
+          title={boardMode === 'plane'
+            ? '平面モードで始めます（この1回だけ。もう一度押すと立体へ戻ります）'
+            : 'スタッフ用: 3歳前後の子のとき、平面の盤で遊ばせる（この1回だけ）'}
+          aria-pressed={boardMode === 'plane'}
+        >
+          へいめん
         </button>
       )}
 

@@ -23,6 +23,90 @@ export function squircleGeometry(radius, e = 4, detail = 3) {
   return g;
 }
 
+/**
+ * 頭の表面に張り付く「口のパッチ」を作る。
+ *
+ * 口を球にして拡大する作りでは、横に広げるほど中央が頭の中へ埋まり、
+ * 頭の丸みで表面が後退する外周だけが飛び出す＝「唇の輪だけが拡大した」ように見えた
+ * （2026-09-08 の指摘）。**頭と同じ超楕円体の式で表面を切り出す**ことで、
+ * どれだけ広げても常に表面へ乗る。
+ *
+ * @param radius     頭の半径にわずかな余裕を足した値（z-fighting を避ける）
+ * @param e          超楕円体の指数。頭（body）と同じ値にすること
+ * @param halfAngle  +Z を中心とした開き（ラジアン）。これが口の大きさになる
+ * @param squashY    縦の潰し。1 で丸い開口、小さくすると横長になる。
+ *                   潰れて半径が縮んだ部分は頭に隠れるので、閉じた口は細い線に見える
+ */
+export function mouthPatchGeometry(radius, e, halfAngle, squashY, seg = 20) {
+  const g = new THREE.SphereGeometry(1, seg, seg, 0, Math.PI * 2, 0, halfAngle);
+  // SphereGeometry の帽子は +Y が中心なので、+Z を向くように倒す
+  g.rotateX(Math.PI / 2);
+  const p = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i).normalize();
+    const d = Math.pow(
+      Math.pow(Math.abs(v.x), e) + Math.pow(Math.abs(v.y), e) + Math.pow(Math.abs(v.z), e),
+      1 / e
+    );
+    v.multiplyScalar(radius / d);
+    p.setXYZ(i, v.x, v.y * squashY, v.z);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+/** 口の開き具合の段目数。閉じた細い線から、大きく開いた口まで */
+export const MOUTH_STEPS = 10;
+
+/**
+ * 「GOAL」の札。板（Sprite）なので盤面がどう回っても常に正面を向く。
+ *
+ * ゴールを形と色だけで示していたため、初見では「オレンジの玉」に見えて
+ * どこを目指すのか分からなかった（2026-09-08 の動作確認）。
+ * 文字は読ませるためではなく**目印**として置く。金色の背景に沈まないよう、
+ * 影 → 白フチ → 本体の順に重ねて塊として見えるようにする。
+ */
+export function goalLabelSprite() {
+  const W = 256, H = 128;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+
+  g.font = 'bold 76px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineJoin = 'round';
+
+  g.shadowColor = 'rgba(90,40,0,0.55)';
+  g.shadowBlur = 10;
+  g.shadowOffsetY = 4;
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = 16;
+  g.strokeText('GOAL', W / 2, H / 2);
+
+  g.shadowColor = 'transparent';
+  g.fillStyle = '#e8410f';
+  g.fillText('GOAL', W / 2, H / 2);
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(
+    // depthTest を切って常に最前面へ出す。グミの球体と交差すると
+    // 札が半分めり込んで見えるため（2026-09-08 の動作確認）。
+    // 裏の面にゴールがあるときも位置が分かるという利点もある。
+    new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false })
+  );
+  sprite.scale.set(1.7, 0.85, 1);
+  // 🔴 depthTest を切るだけでは足りない。グミもキューブ本体も transparent なので、
+  // three は透明オブジェクトをカメラからの距離順に描く。ゴールが裏の面にあると
+  // 札のほうが遠いため先に描かれ、あとから描かれる本体に塗り潰される
+  // （初手でゴールが隠れる。2026-09-08 の動作確認）。
+  // renderOrder を上げて必ず最後に描く。
+  sprite.renderOrder = 1000;
+  return sprite;
+}
+
 /** 面をまたぐ辺は角の外側へ膨らむベジェにする */
 export function edgeCurve(pa, pb, na, nb) {
   if (na.equals(nb)) return new THREE.LineCurve3(pa.clone(), pb.clone());
@@ -75,6 +159,20 @@ function disposeStage(c) {
     c.core.geometry.dispose(); c.core.material.dispose();
     c.core = null;
   }
+
+  if (c.goalLabel) {
+    c.scene.remove(c.goalLabel);
+    // geometry は three が全 Sprite で共有しているので触らない。
+    // ステージごとに作り直しているテクスチャとマテリアルだけ捨てる。
+    c.goalLabel.material.map?.dispose();
+    c.goalLabel.material.dispose();
+    c.goalLabel = null;
+    c.goalCell = null;
+  }
+
+  // 覚えていた進行方向は面ごとの座標に依存するので持ち越さない。
+  // 次のステージのスタート地点では、また顔を見せる状態から始める。
+  c.faceQ = null;
 }
 
 /* ============================================================
@@ -95,6 +193,7 @@ function disposeStage(c) {
  */
 export default function GummyBoard({
   stage, path, movable, cleared, onPick, onReject, onLanded, shakeRef, hudOverlay = true,
+  plane = false,
 }) {
   const mountRef = useRef(null);
   const ctx = useRef(null);
@@ -104,12 +203,16 @@ export default function GummyBoard({
   const landedRef = useRef(onLanded);
   // fit() はマウント時に1回だけ作る関数なので、最新の値は ref 経由で読む
   const overlayRef = useRef(hudOverlay);
+  // 盤面の作り。マウント時1回の初期化からも読むので ref に置く
+  // （プレイ中に切り替わることはない。切り替えは次のプレイから効く）
+  const planeRef = useRef(plane);
 
   pickRef.current = onPick;
   rejectRef.current = onReject;
   landedRef.current = onLanded;
   overlayRef.current = hudOverlay;
-  live.current = { stage, path, movable, cleared, pathSet: new Set(path) };
+  planeRef.current = plane;
+  live.current = { stage, path, movable, cleared, pathSet: new Set(path), plane };
 
   /* --- 初期化（マウント時1回） --- */
   useEffect(() => {
@@ -155,26 +258,60 @@ export default function GummyBoard({
     chara.add(body);
     const eyeGeo = new THREE.SphereGeometry(0.055, 12, 12);
     const eyeMat = new THREE.MeshBasicMaterial({ color: 0x2a1330 });
+    // 食いつくときに口を大きく開けるので、目は上へ逃がして細める。
+    // 動かすために参照を持っておく。
+    const eyes = [];
     for (const sx of [-1, 1]) {
       const eye = new THREE.Mesh(eyeGeo, eyeMat);
       eye.position.set(sx * 0.11, 0.05, 0.26);
+      eye.userData.home = eye.position.clone();
       chara.add(eye);
+      eyes.push(eye);
     }
     const cheekGeo = new THREE.SphereGeometry(0.05, 10, 10);
     const cheekMat = new THREE.MeshBasicMaterial({ color: 0xff9dbb, transparent: true, opacity: 0.75 });
+    // グミを食べた直後は頬を膨らませる（ほおばった顔）。動かすので参照を持つ。
+    const cheeks = [];
     for (const sx of [-1, 1]) {
       const ch = new THREE.Mesh(cheekGeo, cheekMat);
       ch.position.set(sx * 0.21, -0.05, 0.2);
+      ch.userData.home = ch.position.clone();
       chara.add(ch);
+      cheeks.push(ch);
     }
-    // 口。いつもゆっくり開閉させる（描画ループで scale.y を動かす）
+    /* 口。頭と同心の「表面パッチ」で作る。
+       開き具合ごとにジオメトリを用意しておき、描画ループで差し替える。
+       角度を毎フレーム作り直すのは無駄なので段階で持つ（MOUTH_STEPS 段）。
+       body と同心なので、体が膨らんだら同じ倍率を掛けるだけで表面に乗り続ける。 */
+    const mouthGeos = [];
+    for (let i = 0; i < MOUTH_STEPS; i++) {
+      const k = i / (MOUTH_STEPS - 1);          // 0=閉じている 1=大きく開く
+      const halfAngle = THREE.MathUtils.degToRad(24 + 30 * k);
+      const squashY = 0.16 + 0.78 * k;
+      mouthGeos.push(mouthPatchGeometry(0.3 * 1.02, 2.6, halfAngle, squashY));
+    }
     const mouth = new THREE.Mesh(
-      new THREE.SphereGeometry(0.055, 14, 10),
+      mouthGeos[0],
       new THREE.MeshBasicMaterial({ color: 0x8a2338 })
     );
-    mouth.position.set(0, -0.11, 0.275);
-    mouth.scale.set(1.45, 0.55, 0.5);
+    // パッチは頭と同心。中心を口の位置（やや下）へ向けて倒す
+    mouth.rotation.x = 0.38;
+    // 頭の表面に沿っているので、体より後に描いて z-fighting を避ける
+    mouth.renderOrder = 2;
     chara.add(mouth);
+
+    // 舌。口の中に見えるものが無いと、開いても「暗い楕円が広がった」だけで
+    // 口の中に見えなかった（2026-09-08 の指摘）。口の下寄りに小さく置き、
+    // 口より少し手前に出すことで、開いた口の奥行きを見せる。
+    const tongue = new THREE.Mesh(
+      new THREE.SphereGeometry(0.03, 12, 10),
+      new THREE.MeshBasicMaterial({ color: 0xff6f8b })
+    );
+    tongue.position.set(0, -0.145, 0.30);
+    tongue.scale.set(1.2, 0.5, 0.4);
+    tongue.userData.home = tongue.position.clone();
+    tongue.visible = false;
+    chara.add(tongue);
 
     // 短い手足。付け根（肩・腰）を軸に振れるよう、Group を回してその中で下へずらす
     const limbGeo = new THREE.CapsuleGeometry(0.045, 0.10, 3, 8);
@@ -201,9 +338,12 @@ export default function GummyBoard({
     ctx.current = {
       scene, camera, renderer, cube, chara, body,
       // 口・手足。歩く動きと「パクパク」で毎フレーム触る
-      parts: { mouth, armL, armR, legL, legR },
+      parts: { mouth, tongue, armL, armR, legL, legR, eyes, cheeks },
+      mouthGeos,
       gummies: new Map(), links: new Map(), curves: new Map(),
-      syrup: new THREE.Group(), core: null,
+      syrup: new THREE.Group(), core: null, goalLabel: null, goalCell: null,
+      // faceQ = 最後に進んだ向き（停止中もこれを向く）。chomp = 口を開ける残り
+      faceQ: null, chomp: 0, suck: 0, hopSq: 1,
       // points/pad がある間は「実際のグミの位置」で詰めて合わせる（外接球より大きく写る）
       frame: { center: new THREE.Vector3(0.4, 0.4, 0.4), radius: 3.2, points: null },
       targetQ: new THREE.Quaternion(), move: null, clock: new THREE.Clock(),
@@ -211,7 +351,13 @@ export default function GummyBoard({
     cube.add(ctx.current.syrup);
 
     /* --- 盤面がUIに隠れず、縦横どちらでも収まるようにカメラを合わせる --- */
-    const VIEW_DIR = new THREE.Vector3(7.6, 6.4, 8.6).normalize();
+    // 立方体は3面を同時に見せる斜め視点。**平面はほぼ正面から見る**
+    // （斜めから見ると平行四辺形に潰れて盤面が読めなくなる）。
+    // わずかに傾けるのは、完全な正面だと立体感が消えてグミが平板に見えるため。
+    const VIEW_DIR = (planeRef.current
+      ? new THREE.Vector3(0.6, 1.1, 9)
+      : new THREE.Vector3(7.6, 6.4, 8.6)
+    ).normalize();
     // fit() の中で使い回す作業用ベクトル（毎フレームは呼ばれないが確保は1度でよい）
     const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
     const fit = () => {
@@ -298,10 +444,49 @@ export default function GummyBoard({
     };
     renderer.domElement.addEventListener('pointerdown', onDown);
 
+    /* --- マウスを乗せたグミの見分け ---
+       進めるグミの上ではカーソルを指の形にする。マウス操作の当日構成では、
+       「押せる場所」を色と光だけで判断させずに済む（2026-09-08 の動作確認）。
+       タップ判定と同じレイキャストを使い、判定が2通りに分かれないようにする。 */
+    const hoverCell = (ev) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      ray.setFromCamera(ndc, camera);
+      const targets = [...ctx.current.gummies.values()].map((g) => g.hit);
+      const hits = ray.intersectObjects(targets, false);
+      return hits.length ? hits[0].object.userData.cell : null;
+    };
+    let lastCursor = '';
+    const onMove = (ev) => {
+      // タッチでは hover が無く、指を離した位置に指カーソルが残るだけなので触らない
+      if (ev.pointerType && ev.pointerType !== 'mouse') return;
+      const cell = hoverCell(ev);
+      const want = cell && live.current.movable.has(cell) ? 'pointer' : 'default';
+      if (want !== lastCursor) {
+        lastCursor = want;
+        renderer.domElement.style.cursor = want;
+      }
+    };
+    const onLeave = () => {
+      lastCursor = 'default';
+      renderer.domElement.style.cursor = 'default';
+    };
+    renderer.domElement.addEventListener('pointermove', onMove);
+    renderer.domElement.addEventListener('pointerleave', onLeave);
+
     /* --- 描画ループ --- */
     let raf;
     const tmpV = new THREE.Vector3();
     const tmpN = new THREE.Vector3();
+    // キャラの向きと GOAL 札の位置決め用。毎フレーム使うので確保は1度だけ
+    const dirF = new THREE.Vector3();
+    const dirU = new THREE.Vector3();
+    const dirM = new THREE.Matrix4();
+    const dirQ = new THREE.Quaternion();
+    const leanQ = new THREE.Quaternion();
+    const ORIGIN = new THREE.Vector3();
+    const AXIS_X = new THREE.Vector3(1, 0, 0);
     const loop = () => {
       raf = requestAnimationFrame(loop);
       const c = ctx.current;
@@ -317,11 +502,17 @@ export default function GummyBoard({
         u.cur.lerp(u.want, 1 - Math.pow(0.0005, dt));
         g.mesh.material.color.copy(u.cur);
         g.mesh.material.emissive.copy(u.wantEmissive);
-        g.mesh.material.emissiveIntensity += (u.wantEmissiveI - g.mesh.material.emissiveIntensity) * Math.min(1, dt * 9);
+        // 進めるグミは明るさも脈打たせる。大きさだけ 5% 揺らしていた頃は
+        // 「光っている」と読み取れず、進める先が初見で分からなかった
+        // （2026-09-08 の動作確認）。光量を動かすほうが目に付く。
+        const glow = (u.state === 'movable' || u.state === 'goalOpen')
+          ? u.wantEmissiveI * (1 + 0.45 * Math.sin(t * 4.2 + u.phase))
+          : u.wantEmissiveI;
+        g.mesh.material.emissiveIntensity += (glow - g.mesh.material.emissiveIntensity) * Math.min(1, dt * 9);
         g.mesh.material.opacity += (u.wantOpacity - g.mesh.material.opacity) * Math.min(1, dt * 9);
 
         let s = u.wantScale;
-        if (u.state === 'movable' || u.state === 'goalOpen') s *= 1 + 0.055 * Math.sin(t * 5.2 + u.phase);
+        if (u.state === 'movable' || u.state === 'goalOpen') s *= 1 + 0.11 * Math.sin(t * 4.2 + u.phase);
         if (u.pop > 0) { u.pop = Math.max(0, u.pop - dt * 3.2); s *= 1 + Math.sin(u.pop * Math.PI) * 0.42; }
         u.scale += (s - u.scale) * Math.min(1, dt * 14);
         g.mesh.scale.setScalar(u.scale);
@@ -337,6 +528,30 @@ export default function GummyBoard({
         }
       }
 
+      // GOAL の札。画面上でゴールのグミの真上に来るよう置き直す。
+      // カメラのワールド行列の Y 列が「画面の上」なので、それだけ持ち上げる。
+      // 盤面がどの面を向いていても、札は常にゴールの真上に立つ。
+      const gLabel = c.goalLabel;
+      const gGummy = c.goalCell ? c.gummies.get(c.goalCell) : null;
+      if (gLabel && gGummy) {
+        // renderer が行列を更新するのは描画時なので、ここで先に更新しておく。
+        // でないとキューブの傾きが1フレーム遅れて札がずれる。
+        c.camera.updateMatrixWorld();
+        c.cube.updateMatrixWorld(true);
+        gGummy.mesh.getWorldPosition(dirF);
+        dirU.setFromMatrixColumn(c.camera.matrixWorld, 1).normalize();
+        // ゆっくり上下させて目を引く
+        gLabel.position.copy(dirF).addScaledVector(dirU, 0.95 + Math.sin(t * 1.9) * 0.07);
+        // ゴールに手が届いた（＝残り1つ）ときは、札を大きく脈打たせて知らせる。
+        // 以前は画面中央に「あと1つ！ GOAL へ」の帯を出していたが、
+        // それが GOAL 札そのものに被っていた（2026-09-08 の指摘）。
+        // 文字を増やすのではなく、GOAL 側を膨らませて気づかせる。
+        const k = live.current.movable.has(c.goalCell)
+          ? 1.32 + 0.13 * Math.sin(t * 6.2)
+          : 1;
+        gLabel.scale.set(gLabel.userData.base.x * k, gLabel.userData.base.y * k, 1);
+      }
+
       // キャラクター移動
       const st = live.current;
       if (c.move) {
@@ -347,13 +562,22 @@ export default function GummyBoard({
         tmpN.copy(c.move.n0).lerp(c.move.n1, ease).normalize();
         const hop = Math.sin(Math.PI * ease) * 0.4;
         c.chara.position.copy(tmpV).addScaledVector(tmpN, 0.42 + hop);
-        const sq = 1 + Math.sin(Math.PI * ease) * 0.16;
-        c.body.scale.set(1 / Math.sqrt(sq), sq, 1 / Math.sqrt(sq));
+        // 跳ねているあいだの伸び。体のスケールは下の表情処理でまとめて設定するので、
+        // ここでは値だけ渡す（直接書くと上書きされる）。
+        c.hopSq = 1 + Math.sin(Math.PI * ease) * 0.16;
+        // 口を開けるのは移動の**後半**。着いた瞬間に膨らませたいので、
+        // 吸い込みは予備動作として着く前に済ませる
+        // （以前は着いてから開け始めたため、膨らみが移動の後にずれていた。
+        //  2026-09-08 の指摘）。
+        c.suck = Math.max(0, Math.min(1, (p - 0.4) / 0.6));
         if (p >= 1) {
           const g = c.gummies.get(c.move.to);
           if (g) g.mesh.userData.pop = 1;
           const crossed = c.move.cross;
           c.move = null;
+          // 着いた瞬間に飲み込んで膨らむ。口は閉じる
+          c.chomp = 1;
+          c.suck = 0;
           landedRef.current?.(crossed);
         }
       } else if (st.stage) {
@@ -362,25 +586,127 @@ export default function GummyBoard({
         const n = st.stage.nrm.get(cur);
         if (pos) {
           const bob = Math.sin(t * 2.6) * 0.035;
-          c.chara.position.copy(pos).addScaledVector(n, 0.44 + bob);
+          // 食いついた瞬間はグミへ少し沈み込み、離れぎわに跳ね上がる
+          // 食べた瞬間にグミへ沈み込んで戻る（膨らみと同じ波を使う）
+          const dive = -0.16 * (c.chomp > 0 ? Math.sin(c.chomp * Math.PI / 2) : 0);
+          c.chara.position.copy(pos).addScaledVector(n, 0.44 + bob + dive);
         }
-        c.body.scale.lerp(tmpV.set(1, 1, 1), Math.min(1, dt * 8));
+        c.hopSq += (1 - c.hopSq) * Math.min(1, dt * 8);
       }
 
-      // 口はいつもゆっくりパクパクさせる（止まっていても生きている感じを出す）
+      /* --- 食いつく動き ---
+         着いた瞬間に「口を大きく開ける・体を潰す・手を上げる・沈んで跳ねる」を
+         まとめて出す。移動中の伸縮だけだと淡々と移るように見えたため
+         （2026-09-08 の動作確認）。chomp は 1 → 0 へ減っていく残り時間。 */
       const P = c.parts;
-      P.mouth.scale.y = 0.26 + 0.36 * (0.5 + 0.5 * Math.sin(t * 2.2));
+      if (c.chomp > 0) {
+        c.chomp = Math.max(0, c.chomp - dt * 2.2);
+      }
+      /* 2つの波。
+           open : 移動の後半。口を開けてグミへ向かう（予備動作）
+           puff : 着いた瞬間から。体と頬が膨らんで、しぼむ
+         着地で suck を 0・chomp を 1 にするので、
+         **口が閉じるのと膨らみ始めるのが同じ瞬間**になる。 */
+      const open = c.move ? (c.suck || 0) : 0;
+      const puff = c.chomp > 0 ? Math.sin(c.chomp * Math.PI / 2) : 0;
+      const bite = Math.max(open, puff);
 
-      // 移動中だけ手足を振る。止まったらゆっくり元の位置へ戻す
+      /* 体の膨らみ。
+         ほおばりで丸く膨らみ、吸い込みで縦に潰れる。
+         🔴 **顔の部品は body の子ではなく chara の兄弟**なので、
+         body だけ大きくすると目・口・頬が体に飲み込まれる。
+         下で部品の位置を同じ倍率で押し出して、表面に乗せ続ける。 */
+      const grow = 1 + 0.45 * puff;                 // ほおばりの膨らみ
+      const sqz = (1 - 0.20 * open) * (c.hopSq ?? 1); // 吸い込みの潰れ × 跳ねの伸び
+      const bodyY = grow * sqz;
+      const bodyXZ = grow / Math.sqrt(sqz);
+      c.body.scale.set(bodyXZ, bodyY, bodyXZ);
+
+      /** 顔の部品を、膨らんだ体の表面へ押し出す */
+      const rideOn = (obj, dy = 0, dz = 0) => {
+        const home = obj.userData.home;
+        obj.position.set(
+          home.x * bodyXZ,
+          home.y * bodyY + dy,
+          home.z * bodyXZ + dz
+        );
+      };
+
+      /* 口。頭と同心のパッチなので、body と同じ倍率を掛けるだけで表面に乗る。
+         開き具合は段階のジオメトリを差し替えて表す（角度を毎フレーム作り直さない）。
+         平常時もゆっくり開閉させて、生きている感じを出す。 */
+      const mouthOpen = bite > 0
+        ? open
+        : 0.08 * (0.5 + 0.5 * Math.sin(t * 2.2));
+      const gi = Math.min(
+        MOUTH_STEPS - 1,
+        Math.max(0, Math.round(mouthOpen * (MOUTH_STEPS - 1)))
+      );
+      if (c.mouthGeos[gi] !== P.mouth.geometry) P.mouth.geometry = c.mouthGeos[gi];
+      P.mouth.scale.set(bodyXZ, bodyY, bodyXZ);
+
+      // 舌。開いているあいだだけ、口の中に見せる
+      P.tongue.visible = open > 0.25;
+      if (P.tongue.visible) {
+        P.tongue.scale.set(1.2 * open, 0.5 * open, 0.4);
+        rideOn(P.tongue, 0.02 * open, 0.02 * open);
+      }
+
+      // 頬。ほおばっているあいだ大きく張り出す（カービィのイメージ）
+      for (const ch of P.cheeks) {
+        ch.scale.setScalar(1 + 2.0 * puff);
+        rideOn(ch);
+      }
+
+      // 目。口を開けるあいだは上へ逃がし、ほおばるあいだは細めて笑顔にする
+      for (const eye of P.eyes) {
+        rideOn(eye, 0.05 * open);
+        eye.scale.set(1, 1 - 0.45 * open - 0.35 * puff, 1);
+      }
+
+      // 移動中だけ手足を振る。止まったらゆっくり元の位置へ戻す。
+      // 食いつく瞬間だけは、両手を勢いよく前へ出す。
       const swing = c.move ? Math.sin(t * 16) * 0.85 : 0;
       const k = Math.min(1, dt * 16);
+      // 吸い込むときに手を前へ出す（ほおばっている間は下ろす）
+      const armBite = -1.5 * open;
       P.legL.rotation.x += (swing - P.legL.rotation.x) * k;
       P.legR.rotation.x += (-swing - P.legR.rotation.x) * k;
-      P.armL.rotation.x += (-swing * 0.8 - P.armL.rotation.x) * k;
-      P.armR.rotation.x += (swing * 0.8 - P.armR.rotation.x) * k;
+      P.armL.rotation.x += ((armBite || -swing * 0.8) - P.armL.rotation.x) * k;
+      P.armR.rotation.x += ((armBite || swing * 0.8) - P.armR.rotation.x) * k;
 
-      // 常にカメラを向く
-      c.chara.lookAt(c.cube.worldToLocal(c.camera.position.clone()));
+      // キャラの向き。
+      //   移動中     : 進む方向を向く
+      //   移動したあと: **その方向を向いたまま**（顔をカメラへ戻さない）
+      //   スタート地点: カメラを向いて顔を見せる
+      // 以前は常にカメラを向いていたため、どこへ向かっているのか分からず
+      // 「ずっと外側を向いている」ように見えた（2026-09-08 の動作確認）。
+      // 吸い込む瞬間だけ前へ乗り出す。ほおばっている間は起き上がる。
+      // 目標の向きへ掛けるだけなので角度が累積しない
+      leanQ.setFromAxisAngle(AXIS_X, 0.5 * open - 0.12 * puff);
+      if (c.move) {
+        // 曲線の接線＝進行方向。逆走のときは向きが反転する
+        c.move.curve.getTangent(c.move.rev ? 1 - c.move.t : c.move.t, dirF);
+        if (c.move.rev) dirF.negate();
+        dirU.copy(tmpN);                        // 立っている面の法線を上にする
+        dirF.projectOnPlane(dirU);              // 面に沿った成分だけ残す
+        if (dirF.lengthSq() > 1e-6) {
+          dirF.normalize();
+          // lookAt(eye, target, up) は +Z が target → eye を向く。
+          // 顔（目・口）は +Z 側にあるので、進行方向を eye に置く。
+          dirM.lookAt(dirF, ORIGIN, dirU);
+          dirQ.setFromRotationMatrix(dirM);
+          // 進み終わったあとも保つので、最後の向きを覚えておく（前傾は含めない）
+          c.faceQ = (c.faceQ || new THREE.Quaternion()).copy(dirQ);
+          c.chara.quaternion.slerp(dirQ.multiply(leanQ), Math.min(1, dt * 12));
+        }
+      } else if (c.faceQ && live.current.path.length > 1) {
+        dirQ.copy(c.faceQ).multiply(leanQ);
+        c.chara.quaternion.slerp(dirQ, Math.min(1, dt * 12));
+      } else {
+        // まだ1歩も進んでいない（スタート地点）。ここだけ顔を見せる
+        c.chara.lookAt(c.cube.worldToLocal(c.camera.position.clone()));
+      }
 
       renderer.render(scene, camera);
     };
@@ -398,9 +724,14 @@ export default function GummyBoard({
           for (const m of mats) m.dispose();
         }
       });
+      // 口の段階ジオメトリ。いま使っている1つは上の traverse が捨てるが、
+      // 残りは scene に載っていないので個別に捨てる
+      for (const g of mouthGeos) g.dispose();
       ro.disconnect();
       window.removeEventListener('orientationchange', fit);
       renderer.domElement.removeEventListener('pointerdown', onDown);
+      renderer.domElement.removeEventListener('pointermove', onMove);
+      renderer.domElement.removeEventListener('pointerleave', onLeave);
       renderer.forceContextLoss();
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
@@ -425,15 +756,19 @@ export default function GummyBoard({
     // 内側のゼリーコア。
     // 紫にすると背景（紫のグラデーション）に溶けてキューブの形が分からなくなるため、
     // 背景から離れた青系にして輪郭が立つようにしている。
-    c.core = new THREE.Mesh(
-      squircleGeometry(N / 2 - 0.09, 7, 3),
-      new THREE.MeshPhysicalMaterial({
-        color: 0x2f6be0, roughness: 0.3, metalness: 0,
-        clearcoat: 0.9, transparent: true, opacity: 0.94,
-        emissive: 0x0b2a6b, emissiveIntensity: 0.35,
-      })
-    );
-    c.cube.add(c.core);
+    // 平面では出さない。1面しか無いのに立方体の胴体があると、
+    // グミが宙に浮いた板の上に乗っているように見えて意味が通らない。
+    if (!live.current.plane) {
+      c.core = new THREE.Mesh(
+        squircleGeometry(N / 2 - 0.09, 7, 3),
+        new THREE.MeshPhysicalMaterial({
+          color: 0x2f6be0, roughness: 0.3, metalness: 0,
+          clearcoat: 0.9, transparent: true, opacity: 0.94,
+          emissive: 0x0b2a6b, emissiveIntensity: 0.35,
+        })
+      );
+      c.cube.add(c.core);
+    }
 
     // グミ本体
     const gGeo = squircleGeometry(0.4, 4, 3);
@@ -470,6 +805,18 @@ export default function GummyBoard({
 
       c.gummies.set(cell, { mesh, hit });
     }
+
+    // ゴールの「GOAL」札。
+    // cube の子にして面の法線方向へ置くと、面によって真横や真下に回り込んで
+    // 位置が読めなかった（2026-09-08 の動作確認）。scene 直下に付けて、
+    // 毎フレーム「画面上でゴールの真上」へ置き直す（下の描画ループ）。
+    // links には入れない。あちらは辺の濃さを id から一括で書き換えるループが回るうえ、
+    // Sprite の geometry は three が全 Sprite で共有していて dispose すると以後が壊れる。
+    const goalLabel = goalLabelSprite();
+    goalLabel.userData.base = goalLabel.scale.clone();
+    c.scene.add(goalLabel);
+    c.goalLabel = goalLabel;
+    c.goalCell = stage.goal;
 
     // スタート地点のリング
     const ring = new THREE.Mesh(
@@ -585,18 +932,20 @@ export default function GummyBoard({
           u.wantOpacity = 0.5; u.wantScale = 0.66; break;
         case 'movable':
           u.want.setHex(COL.movable); u.wantEmissive.setHex(0xff4f8f);
-          u.wantEmissiveI = 0.55; u.wantOpacity = 0.95; u.wantScale = 1.06; break;
+          u.wantEmissiveI = 0.85; u.wantOpacity = 1; u.wantScale = 1.12; break;
         case 'goalOpen':
           u.want.setHex(COL.goalOpen); u.wantEmissive.setHex(0xffb400);
-          u.wantEmissiveI = 0.9; u.wantOpacity = 1; u.wantScale = 1.15; break;
+          u.wantEmissiveI = 1.05; u.wantOpacity = 1; u.wantScale = 1.2; break;
         case 'goal':
+          // まだ届かないゴール。最初から探せるよう、待機中でも少し光らせておく
           u.want.setHex(COL.goal); u.wantEmissive.setHex(0xffa000);
-          u.wantEmissiveI = 0.3; u.wantOpacity = 0.95; u.wantScale = 1.02; break;
+          u.wantEmissiveI = 0.45; u.wantOpacity = 1; u.wantScale = 1.06; break;
         default:
-          // 今は進めないグミ。明るい緑＋少し透けさせて、
-          // 「行けるグミ（光るピンク）」との差を色でも明るさでも付ける
+          // 今は進めないグミ。色は明るい緑のまま残す（暗くすると
+          // 「触ってはいけない」感が強すぎる）。代わりに発光を消し、
+          // 透かして少し小さくして、進めるグミとの差を明るさと大きさで付ける。
           u.want.setHex(COL.idle); u.wantEmissive.setHex(0x1f7a12);
-          u.wantEmissiveI = 0.12; u.wantOpacity = 0.62; u.wantScale = 1;
+          u.wantEmissiveI = 0; u.wantOpacity = 0.48; u.wantScale = 0.94;
       }
       // Undoで戻ってきたグミは「ぽんっ」と復活
       if (wasVisited && state !== 'visited' && state !== 'current') u.pop = 1;
@@ -631,9 +980,11 @@ export default function GummyBoard({
       ));
     }
 
-    // 面の向きに合わせてキューブを傾ける
+    // 面の向きに合わせてキューブを傾ける。
+    // 平面は面が1つなので傾ける相手がおらず、傾けると盤面が読みにくくなるだけ
     const face = cur[0];
-    const e = face === 'F' ? new THREE.Euler(0, 0.19, 0)
+    const e = live.current.plane ? new THREE.Euler(0, 0, 0)
+      : face === 'F' ? new THREE.Euler(0, 0.19, 0)
       : face === 'R' ? new THREE.Euler(0, -0.19, 0)
       : new THREE.Euler(0.17, 0, 0);
     c.targetQ.setFromEuler(e);

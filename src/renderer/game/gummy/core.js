@@ -9,6 +9,8 @@ import { countCriticals, SOLVE_NODE_BUDGET } from './solve.js';
    ============================================================ */
 
 export const FACES = ['U', 'F', 'R'];
+/** 平面モードで使う面（正面だけ）。3歳以上を対象に加えたときに用意した */
+export const PLANE_FACES = ['F'];
 export const k = (f, r, c) => `${f}-${r}-${c}`;
 
 /** セル中心座標（立方体中心を原点、1セル=1単位） */
@@ -23,13 +25,21 @@ export function cellPos(f, r, c, N) {
 
 export const FACE_NORMAL = { U: [0, 1, 0], F: [0, 0, 1], R: [1, 0, 0] };
 
-/** 3面ぶんの隣接グラフ（面内4近傍＋3本の稜線シーム） */
-export function buildAdjacency(N) {
+/**
+ * 隣接グラフ（面内4近傍＋面をまたぐ稜線シーム）。
+ *
+ * @param faces 使う面。既定は3面（立方体）。`['F']` を渡すと正面だけの
+ *              **平面**になる（3歳以上を対象に加えたため。稜線シームは
+ *              両側の面が揃っているときだけ張るので、面を減らしても
+ *              つながり方は壊れない）。
+ */
+export function buildAdjacency(N, faces = FACES) {
+  const use = new Set(faces);
   const adj = new Map();
   const touch = (a) => { if (!adj.has(a)) adj.set(a, new Set()); return adj.get(a); };
   const link = (a, b) => { touch(a).add(b); touch(b).add(a); };
 
-  for (const f of FACES) {
+  for (const f of faces) {
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
         touch(k(f, r, c));
@@ -39,11 +49,17 @@ export function buildAdjacency(N) {
     }
   }
   // 稜線 1: 正面の上端 ↔ 上面の手前端
-  for (let c = 0; c < N; c++) link(k('F', 0, c), k('U', N - 1, c));
+  if (use.has('F') && use.has('U')) {
+    for (let c = 0; c < N; c++) link(k('F', 0, c), k('U', N - 1, c));
+  }
   // 稜線 2: 正面の右端 ↔ 右面の左端
-  for (let r = 0; r < N; r++) link(k('F', r, N - 1), k('R', r, 0));
+  if (use.has('F') && use.has('R')) {
+    for (let r = 0; r < N; r++) link(k('F', r, N - 1), k('R', r, 0));
+  }
   // 稜線 3: 上面の右端 ↔ 右面の上端
-  for (let r = 0; r < N; r++) link(k('U', r, N - 1), k('R', 0, N - 1 - r));
+  if (use.has('U') && use.has('R')) {
+    for (let r = 0; r < N; r++) link(k('U', r, N - 1), k('R', 0, N - 1 - r));
+  }
 
   return adj;
 }
@@ -145,6 +161,22 @@ export const DIFFICULTY = {
   normal: { label: 'Normal',    ratio: 0.50, tries: 70,  minCriticals: 9 },
   hard:   { label: 'Hard',      ratio: 0.65, tries: 110, minCriticals: 11 },
   vhard:  { label: 'Very Hard', ratio: 0.75, tries: 110, minCriticals: 13 },
+
+  // --- 平面モード用（正面1面・既定は 5×5 の25セル）---
+  // 🔴 **上の値は3面48セル前提。** 平面ではセル数が約半分なので、
+  // minCriticals 5〜13 はどの盤面でも到達しない（実測 到達率0%）。
+  // 到達しないと generateStage が試行回数と 400ms を毎回使い切るうえ、
+  // 難易度のつまみも効かなくなる。平面は平面で測った目標を持つ。
+  //
+  // 実測（5×5 平面・各200回・中央値）:
+  //   キー          ratio  グミ  穴  致命的
+  //   pveasy(一本道) 0.22    6   19    0
+  //   peasy          0.30    8   17    2
+  //   pnormal        0.50   13   12    5
+  //   phard          0.65   16    9    6
+  peasy:   { label: 'Easy',   ratio: 0.30, tries: 40, minCriticals: 2 },
+  pnormal: { label: 'Normal', ratio: 0.50, tries: 70, minCriticals: 4 },
+  phard:   { label: 'Hard',   ratio: 0.65, tries: 90, minCriticals: 6 },
 };
 
 /** 目標に届く盤面を探すために引き直す上限 */
@@ -171,14 +203,14 @@ const now = () =>
  * どちらも届かなければ、それまでで最も条件に近いものを返す。
  * **返す盤面は必ず解ける**（生成時の経路がそのまま解になっている）。
  */
-export function generateStage(N, diffKey) {
+export function generateStage(N, diffKey, faces = FACES) {
   const diff = DIFFICULTY[diffKey] || DIFFICULTY.normal;
 
   if (diff.corridor) {
     // 分岐の無い盤面（進む先が常に一つ）。難所の数を数える必要がないので安い
     let best = null;
     for (let i = 0; i < GENERATE_TRIES; i++) {
-      const st = generateStageOnce(N, diffKey);
+      const st = generateStageOnce(N, diffKey, faces);
       if (st.stats.branch === 0) return st;
       if (!best || st.stats.branch < best.stats.branch) best = st;
     }
@@ -186,13 +218,13 @@ export function generateStage(N, diffKey) {
   }
 
   const target = diff.minCriticals ?? 0;
-  if (target <= 0) return generateStageOnce(N, diffKey);
+  if (target <= 0) return generateStageOnce(N, diffKey, faces);
 
   const deadline = now() + SELECT_BUDGET_MS;
   let best = null;
   let bestScore = -1;
   for (let i = 0; i < GENERATE_TRIES; i++) {
-    const st = generateStageOnce(N, diffKey);
+    const st = generateStageOnce(N, diffKey, faces);
     const { criticals } = countCriticals(st, SOLVE_NODE_BUDGET);
     st.stats.criticals = criticals;
     if (criticals >= target) return st;
@@ -205,9 +237,9 @@ export function generateStage(N, diffKey) {
   return best;
 }
 
-function generateStageOnce(N, diffKey) {
+function generateStageOnce(N, diffKey, faces = FACES) {
   const diff = DIFFICULTY[diffKey] || DIFFICULTY.normal;
-  const full = buildAdjacency(N);
+  const full = buildAdjacency(N, faces);
   const all = [...full.keys()];
   const target = Math.round(all.length * diff.ratio);
 
