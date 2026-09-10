@@ -86,7 +86,7 @@
   },
   "_comment_comfyui_settings": "ComfyUI画像変換システム設定。ローカルPC(GPU無し)とAIサーバー(GPU有り)を activeProfile の1語で切り替える",
   "comfyui": {
-    "_comment_active_profile": "使用するプロファイル名。profiles のキーから選ぶ。存在しない名前を書いた場合は黙って既定へ倒さず起動時に警告する（重いワークフローを低スペック機で回して気づかない事故を防ぐため）。生成が間に合わないときは local（inputSize 384・実測170秒）→ local_light（inputSize 320・実測123秒）へ向けて再起動する。ただし 320 は実写で画質が落ちるので最後の手段。1枚あたりの実測と画質の落ち方は README の「1枚あたりの生成時間と、間に合わないときの退避」を参照",
+    "_comment_active_profile": "使用するプロファイル名。profiles のキーから選ぶ。存在しない名前を書いた場合は黙って既定へ倒さず起動時に警告する（重いワークフローを低スペック機で回して気づかない事故を防ぐため）。⚠️ **当日は絶対にアプリを再起動しないこと**（待っている子のぶんが全員プレースホルダで確定する）。当日に生成が間に合わないときは、⚙を5回タップ →「生成パラメータ」の「入力解像度（正方形）」を 320 にして保存する（再起動不要・次の撮影から効く）。activeProfile の local → local_light 切り替えは**再起動が要るので前日までの調整用**。ただし 320 は実写で画質が落ちるので最後の手段。1枚あたりの実測と画質の落ち方は README の「1枚あたりの生成時間と、間に合わないときの退避」を参照",
     "activeProfile": "local",
     "_comment_output_prefix": "SaveImage の filename_prefix に使う接頭辞。プロファイル側には置かない。image-composition-config.ts が photo_anime_ をハードコードで探すため、変更するとカードが作られなくなる",
     "outputPrefix": "photo_anime",
@@ -136,7 +136,7 @@
       },
         "label": "ローカルPC・画質を落とした退避用（CPU実行）",
         "baseUrl": "http://127.0.0.1:8188",
-        "_comment_template": "接続先とワークフローは local と同じ。違うのは inputSize だけ（384 → 320）。生成が間に合わないときに activeProfile をこちらへ向けて**アプリを再起動**する",
+        "_comment_template": "接続先とワークフローは local と同じ。違うのは inputSize だけ（384 → 320）。⚠️ **当日は使わない**（切り替えに再起動が要り、待っている子のぶんが全員プレースホルダで確定する）。前日までの調整で activeProfile をこちらへ向ける用。当日は設定画面から「入力解像度（正方形）」を 320 にする",
         "templatePath": "assets/ComfyUI_KidsPG_2026_local.json",
         "maxConcurrentJobs": 1,
         "timeouts": {

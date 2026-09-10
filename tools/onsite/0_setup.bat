@@ -210,7 +210,7 @@ if defined DRYRUN (
       if not errorlevel 1 (
         echo        ＊ 当日の config.json は書き換わっています。上書きする前に退避しました:
         echo             !CFG_BACKUP!
-        echo           退避策（activeProfile を local_light 等）を続けたい場合は、
+        echo           退避策（入力解像度を 320 に下げた等）を続けたい場合は、
         echo           このファイルを config.json へ戻してください。
       ) else (
         echo        [警告] config.json を退避できませんでした。上書きすると
@@ -478,12 +478,21 @@ echo        前日までに一度オンラインで読ませ、判定を取り�
 echo        ＊ SAC をオフにする必要はありません。
 echo        ＊ ブロックが 0 件になるまで繰り返してください（数回かかることがあります）。
 echo.
-echo     3. インターネットを切り、**PCを再起動**する
+echo     3. 🔴 **インターネットに繋いだまま** %TARGET%\診断と修復.bat を実行し、
+echo        ★★★ 問題は見つかりませんでした ★★★ が出ることを確かめる
+echo        ウォームアップと起動バッチが書くのは 4x4 の PNG だけです。
+echo        本物のカード土台の読み込み・合成の経路・そしてコーダーの隣へ
+echo        足りない DLL を複製する修復は、ここでしか通りません
+echo        （2026-09-10 の実機では、この修復でカードが作れるようになりました）。
+echo        ＊ [NG] が出たらネットに繋いだまま繰り返してください。
+echo        ＊ 会場でオフラインになってからでは取り返せません。
 echo.
-echo     4. %TARGET%\app\start-kidspg.bat を実行し、
+echo     4. インターネットを切り、**PCを再起動**する
+echo.
+echo     5. %TARGET%\app\start-kidspg.bat を実行し、
 echo        ★★★ 準備完了 ★★★ が出ることを確かめる（これが当日の形）
 echo.
-echo     5. 1プレイ通し、results\^<日時^>\memorial_card_*.png ができれば成功です
+echo     6. 1プレイ通し、results\^<日時^>\memorial_card_*.png ができれば成功です
 goto :sum_done
 
 :sum_stopped

@@ -153,7 +153,10 @@ echo ============================================================
 echo   強制終了した場合の注意
 echo     カードの合成中だった回があっても、書きかけのファイルは
 echo     次回起動時の点検で自動的に片付けられます（救済または削除）。
-echo     それでも足りないときは  node tools\retry-failed.cjs --apply  を実行してください。
+echo     それでも足りないときは、C:\kidspg\ops で次を実行してください:
+echo       node\node.exe tools\retry-failed.cjs --apply
+echo     ＊ 当日PCの node は ops\node\node.exe だけで、PATH には入っていません。
+echo     ＊ 閉場後だけにしてください（遊んでいる子の1枚が約170秒ぶん後ろへ下がります）。
 echo ============================================================
 echo.
 pause

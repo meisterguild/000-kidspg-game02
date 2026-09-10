@@ -372,8 +372,14 @@ fs.mkdirSync(opsDir, { recursive: true });
 // tools/ は「1つ上」に dist と config.json がある前提で書かれているので、
 // ops/ を小さなリポジトリの形に見せる（tools/ と dist/ と config.json を並べる）。
 // 単体テスト（test-*）は当日使わないので入れない。
+// 🔴 診断ログ（診断ログ_*.txt）も入れない。gitignore してあるので追跡はされないが、
+//    ここは作業ツリーをそのままコピーするので、開発機に残っていると USB に載る。
+//    中身は開発機での古い結果なので、当日これを開いた人を誤誘導する（実際に載っていた）。
 copyTree(path.join(ROOT, 'tools'), path.join(opsDir, 'tools'), {
-  filter: (src) => !path.basename(src).startsWith('test-'),
+  filter: (src) => {
+    const name = path.basename(src);
+    return !name.startsWith('test-') && !name.startsWith('診断ログ_');
+  },
 });
 copyTree(path.join(ROOT, 'dist/main'), path.join(opsDir, 'dist/main'));
 // 🔴 **assets を必ず積む。** comfyui-smoke.cjs は

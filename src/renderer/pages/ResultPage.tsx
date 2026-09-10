@@ -126,7 +126,9 @@ const ResultPage: React.FC = () => {
     };
 
     performSave();
-  }, [resultDir, selectedNickname, level, rank, gameScore, hasSaved, isSavingHook, saveError, saveGameResult, handleSaveFailure]);
+    // boardMode も依存に入れる。RESULT 画面では変わらない（切り替えボタンは TOP でしか
+    // 描画されない）が、入れても hasSaved の番で早期 return するので二重保存にはならない。
+  }, [resultDir, selectedNickname, level, rank, gameScore, hasSaved, isSavingHook, saveError, saveGameResult, handleSaveFailure, boardMode]);
 
   useEffect(() => {
     // 🔴 保存に失敗しているあいだは自動で TOP へ戻さない。
