@@ -278,41 +278,52 @@ test('起動バッチは印を待ち、出なければ準備できていない�
   //    ここは当日手順書の「★★★ 準備完了 ★★★ が出たら受付を開けてよい」という
   //    約束そのものなので、条件式まで縛る。
 
-  // 1) 遊べないもの（blockers）が1件でもあれば READY_NG を立てる
-  const ngAt = raw.indexOf('set /a WARN+=!RBLOCK!');
+  // 🔴 bat のコメント（rem / ::）を落としてから見る。落とさないと
+  //    `rem disabled: set "READY_NG=1"` と書くだけで通っていた（実測）。
+  const live = raw
+    .split('\r\n')
+    .filter((l) => !/^\s*(rem\b|::)/i.test(l))
+    .join('\n');
+
+  // 1) 遊べないもの（blockers）が1件でもあれば READY_NG を立てる。
+  //    条件式の**書き方**は縛らない（空白や NEQ で落ちると、次の人が
+  //    期待値を書き換えて守りが消える）。「blockers があるほうの枝」の
+  //    中身に READY_NG=1 があるかを見る。
+  const ngAt = live.indexOf('set /a WARN+=!RBLOCK!');
   assert.ok(ngAt > 0, 'blockers の件数を WARN に足していません');
-  const ifs = [...raw.slice(0, ngAt).matchAll(/if (not )?"!RBLOCK!"=="0" \(/g)];
-  assert.ok(ifs.length > 0, 'RBLOCK による分岐が見つかりません');
-  assert.strictEqual(
-    ifs[ifs.length - 1][1],
-    'not ',
-    'blockers が 0 のときに READY_NG を立てています（条件が反転しています）'
+  const branch = live.slice(Math.max(0, ngAt - 200), ngAt + 200);
+  assert.match(branch, /!RBLOCK!/, 'RBLOCK による分岐が見つかりません');
+  assert.ok(
+    /if not "!RBLOCK!"\s*==\s*"0"/.test(branch) || /if "!RBLOCK!"\s*NEQ\s*"0"/i.test(branch),
+    'blockers が 0 のときに READY_NG を立てています（条件が反転しています）: ' + branch.trim().slice(0, 120)
   );
   assert.match(
-    raw.slice(ngAt, ngAt + 200),
+    live.slice(ngAt, ngAt + 200),
     /set "READY_NG=1"/,
     'blockers があるのに READY_NG を立てていません'
   );
 
   // 2) ready.json を読めなかったときは「読めた」ことにしない
   assert.match(
-    raw,
+    live,
     /if not defined RBLOCK set "RBLOCK=-1"/,
     '報告を読めなかったときに素通りします（-1 にしていません）'
   );
-  const unknownAt = raw.indexOf('if "!RBLOCK!"=="-1" (');
+  const unknownAt = live.indexOf('if "!RBLOCK!"=="-1" (');
   assert.ok(unknownAt > 0, '「読めなかった」の分岐がありません');
   assert.match(
-    raw.slice(unknownAt, unknownAt + 300),
+    live.slice(unknownAt, unknownAt + 300),
     /set "READY_NG=1"/,
     '報告を読めなくても準備完了と言います'
   );
 
-  // 3) まとめは READY_NG を見て分岐する
+  // 3) まとめは READY_NG を見て「準備できていません」へ飛ぶ
+  const sumAt = live.search(/if (not )?defined READY_NG goto/);
+  assert.ok(sumAt > 0, 'まとめが READY_NG を見ていません');
   assert.match(
-    raw,
-    /if defined READY_NG goto :sum_notready/,
-    'まとめが READY_NG を見ていません'
+    live.slice(sumAt, sumAt + 80),
+    /if defined READY_NG goto :sum_notready|if not defined READY_NG goto :sum_(ready|ok)/,
+    'READY_NG のときに「準備できていません」へ飛んでいません'
   );
 });
 
@@ -327,12 +338,21 @@ test('準備できているかの入口（書き込みの実測）が、成功�
   } finally {
     fs.rmSync(okDir, { recursive: true, force: true });
   }
-  // 存在しないドライブレターは Windows で確実に失敗する
-  assert.strictEqual(
-    await checkResultsWritable('Z:\\kidspg-does-not-exist\\results'),
-    false,
-    '書けない場所で true を返しました（「準備完了」が嘘になります）'
-  );
+  // 🔴 ドライブレターに頼らない。Z: を割り当てている機械では
+  //    そこにフォルダを作って通ってしまう（実測）。
+  //    checkResultsWritable は先頭で mkdir するので、**ファイルの下**を
+  //    指せば ENOTDIR で確実に失敗する。後始末も確実。
+  const notDir = path.join(os.tmpdir(), 'kidspg-not-a-dir-' + process.pid);
+  fs.writeFileSync(notDir, 'x');
+  try {
+    assert.strictEqual(
+      await checkResultsWritable(path.join(notDir, 'results')),
+      false,
+      '書けない場所で true を返しました（「準備完了」が嘘になります）'
+    );
+  } finally {
+    fs.rmSync(notDir, { force: true });
+  }
 });
 
 test('準備報告の組み立てが、判定結果をそのまま載せている', () => {
@@ -349,11 +369,22 @@ test('準備報告の組み立てが、判定結果をそのまま載せてい�
     /writable: await checkResultsWritable\(/,
     '書き込みを実測せずに報告しています'
   );
-  // 受け取った blockers / notes をそのまま報告に載せていること
+  // 🔴 「800文字以内に blockers という語がある」だけだと、
+  //    `{ ...base, blockers: [], notes }` と**空で上書き**しても通る（実測）。
+  //    報告オブジェクトの形そのものを見る。
   const clsAt = main.indexOf('classifyReadiness(');
   const after = main.slice(clsAt, clsAt + 800);
-  assert.match(after, /blockers,?\s/, '受け取った blockers を報告に載せていません');
-  assert.match(after, /notes,?\s/, '受け取った notes を報告に載せていません');
+  assert.match(
+    after,
+    /\{\s*\.\.\.base,\s*blockers,\s*notes\s*\}/,
+    '受け取った blockers / notes をそのまま報告に載せていません（空で上書きしていませんか）'
+  );
+  // 入力をその場で作り替えていないこと（writable を true に偽装できてしまう）
+  assert.match(
+    main.slice(clsAt, clsAt + 40),
+    /classifyReadiness\(\s*base\s*\)/,
+    'classifyReadiness に渡す入力を作り替えています（実測値が使われません）'
+  );
 });
 
 test('中止の印を立てたら、必ずまとめへ飛ぶ', () => {

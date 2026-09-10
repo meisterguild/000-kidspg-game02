@@ -419,26 +419,44 @@ test('0_setup.bat は results と logs を消さない（当日の成果物を�
   // 🔴 **/MIR だけを禁止しても足りない。** /PURGE も宛先の余分なファイルを消す。
   //    実測（3巡目のレビュー）: /E /PURGE の robocopy を1行足しても63件すべて緑だった。
   //    robocopy の行を**全部**拾い、1行ずつ見る。
+  //    🔴 ここは一度やらかした。宛先の書き方を `%PKG_TARGET%\app` と決め打ちしたが、
+  //    実際の行は `"%TARGET%"` で、条件が**一度も成立しない到達不能コード**だった。
+  //    しかも旧来の `assert.match(raw, /\/XD results logs/)` を消してしまったので、
+  //    /XD を丸ごと削っても緑のままになっていた（＝守りが減った）。
   const lines = raw.split('\r\n').filter((l) => /robocopy/i.test(l) && !/^\s*rem\b/i.test(l));
   assert.ok(lines.length > 0, 'robocopy の行が見つかりません');
+  let toTarget = 0;
   for (const line of lines) {
-    assert.ok(
-      !/\/(MIR|PURGE)\b/i.test(line),
-      '宛先を消すフラグを使っています（当日の results が消えます）: ' + line.trim()
-    );
-    // app へ入れる robocopy は、当日の成果物を必ず除外すること
-    if (/%PKG_TARGET%\\app/i.test(line)) {
+    // 宛先が当日の置き場（%TARGET% / %PKG_TARGET%）なら、消すフラグは禁止
+    const destIsTarget = /"%(PKG_)?TARGET%[^"]*"/i.test(line);
+    if (destIsTarget) {
+      toTarget += 1;
+      assert.ok(
+        !/\/(MIR|PURGE)\b/i.test(line),
+        '宛先を消すフラグを使っています（当日の results が消えます）: ' + line.trim()
+      );
       assert.match(
         line,
         /\/XD[^\r\n]*\bresults\b/i,
-        'app へのコピーが results を除外していません: ' + line.trim()
+        '当日の置き場へのコピーが results を除外していません: ' + line.trim()
       );
       assert.match(
         line,
         /\/XD[^\r\n]*\blogs\b/i,
-        'app へのコピーが logs を除外していません: ' + line.trim()
+        '当日の置き場へのコピーが logs を除外していません: ' + line.trim()
       );
     }
+  }
+  assert.ok(toTarget >= 1, '当日の置き場へコピーする robocopy が見つかりません（検査が空振りしています）');
+
+  // robocopy 以外の消し方も塞ぐ（xcopy は上書きだけだが、rmdir /s と del /s は消す）
+  for (const line of raw.split('\r\n')) {
+    if (/^\s*(rem|::)/i.test(line)) continue;
+    if (!/(rmdir|rd)\s+\/s|del\s+[^\r\n]*\/s/i.test(line)) continue;
+    assert.ok(
+      !/\b(results|logs)\b/i.test(line),
+      '当日の成果物を消す行があります: ' + line.trim()
+    );
   }
 });
 

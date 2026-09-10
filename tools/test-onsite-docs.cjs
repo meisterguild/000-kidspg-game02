@@ -25,6 +25,35 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
+
+/**
+ * 「アプリを立ち上げ直せ」と読める文か。
+ *
+ * 🔴 **許可リスト（この言い方なら OK）を作らないこと。** 3巡目の再レビューで、
+ * 「立ち上げ直してください」「再起動を推奨します」「再起動が必要です」
+ * 「・詰まったら再起動」（句点なしの箇条書き）が全部すり抜けた。
+ * ここは**再起動に触れている文を拾い、否定されていなければ落とす**向きにする。
+ *
+ * 文の切れ目は「。」だけでなく、箇条書きや改行タグでも切る（句点を使わない
+ * 書き方で1文にまとめられると距離の検査が効かなくなるため）。
+ */
+const SENTENCE_SPLIT = /。|<br\s*\/?>|\r?\n|・|\|/;
+const mentionsRestart = (t) => /再起動|立ち上げ直|起動し直|立ちあげ直/.test(t);
+const isNegated = (t) =>
+  /(再起動|立ち上げ直|起動し直)[^、]{0,6}(しない|しないで|せず|不要|禁止|避け)/.test(t) ||
+  /(しないこと|しないでください|要りません|不要)/.test(t) ||
+  // 「再起動が要る／要ります」は**事実の説明**（前日の調整用と併記される）
+  /(再起動|切り替え)[^、]{0,8}(が要る|が要り|は要る|を伴)/.test(t) ||
+  // 「再起動すると…確定します」は**警告**であって勧めではない
+  /再起動すると/.test(t);
+
+/** 再起動を勧めている文を挙げる（空なら問題なし） */
+const restartAdvice = (text) =>
+  text
+    .split(SENTENCE_SPLIT)
+    .filter((t) => mentionsRestart(t) && !isNegated(t))
+    .map((t) => t.trim())
+    .filter(Boolean);
 const readDoc = () => fs.readFileSync(path.join(ROOT, 'docs', 'setup-onsite.md'), 'utf-8');
 const readSrc = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf-8');
 
@@ -84,20 +113,23 @@ test('「生成が間に合わない」でアプリの再起動を案内して�
   const doc = readDoc();
   const row = doc.split('\n').find((l) => l.startsWith('| 生成が間に合わない |'));
   assert.ok(row, '「生成が間に合わない」の行がありません');
-  assert.match(row, /アプリを再起動しないこと/, '再起動を止めていません');
+  // 言い回しは縛らない（「再起動しないでください」に直しただけで落ちると、
+  // 次の人は期待値を書き換えて守りを消す）。**止めていること**だけを見る。
+  assert.ok(
+    /(再起動|立ち上げ直)[^、。]{0,8}(しないこと|しないで|しません)/.test(row),
+    '再起動を止めていません'
+  );
   assert.ok(!/local_light/.test(row), 'プロファイル切り替え（要再起動）をまだ案内しています');
   // 🔴 **存在の検査だけでは、同じ行に逆の案内が同居していても通る。**
   //    実測（3巡目）: 行末に「それでも詰まるならアプリを再起動してください」を
-  //    足しても11件すべて緑だった。文（。区切り）ごとに見る。
-  //    「再起動すると…確定します」は**警告**なので弾かない。勧めている文だけを弾く。
-  for (const sentence of row.split('。')) {
-    const advises =
-      /再起動して(ください|下さい|おく)/.test(sentence) ||
-      /再起動しましょう/.test(sentence) ||
-      /再起動を(実行|お願い)/.test(sentence);
-    if (!advises) continue;
-    assert.fail('再起動を勧めている文があります: ' + sentence.trim());
-  }
+  //    足しても11件すべて緑だった。さらに許可リスト方式にしたら
+  //    「立ち上げ直してください」「再起動を推奨します」で抜けられた。
+  //    いまは**再起動に触れた文を拾い、否定されていなければ落とす**。
+  assert.deepStrictEqual(
+    restartAdvice(row),
+    [],
+    '再起動を勧めている文があります'
+  );
   // いま並んでいるぶんには効かない、と書いてあること（書かないと二次パニックになる）
   assert.match(row, /いま並んでいるぶんは/, '効き始めのタイミングを書いていません');
 });
@@ -252,30 +284,27 @@ test('config.json のコメントが「当日はアプリを再起動」と言�
     if (!line.includes('_comment')) continue;
     if (!/再起動/.test(line)) continue;
     checked += 1;
-    // 🔴 許可リストの OR にしない。同じ行に「前日までの調整」が残っているだけで
-    //    「当日は再起動して切り替える」を素通りさせていた（実測で確認）。
-    //    ここは**禁止の検出**にする: 「当日」と「再起動」が同居していて、
-    //    それが否定されていない行を落とす。
-    // 🔴 実測（3巡目）: 「当日は使わない」を含む行に別文で再起動を勧める文を
-    //    足しても、句点で2文に分けても、11件すべて緑だった。
-    //    **行ではなく文（。区切り）**を単位にし、行全体に効く抜け道は作らない。
-    for (const sentence of line.split('。')) {
+    // 手順書側と**同じ判定**を使う（別々の許可リストを2つ持っていたため、
+    // どちらも言い回しを変えるだけで抜けられた）。
+    for (const sentence of line.split(SENTENCE_SPLIT)) {
       if (!/当日/.test(sentence)) continue;
-      // 当日にやらせてはいけないのは (1) アプリの再起動 (2) activeProfile の切り替え
+      // 当日にやらせてはいけないのは (1) アプリの再起動 (2) プロファイルの切り替え
       //   （(2) は再起動を伴うので同じこと）。どちらも待ち行列を全員捨てる。
-      const advises =
-        /再起動して(ください|下さい)/.test(sentence) ||
-        /local_light/.test(sentence) ||
-        /activeProfile/.test(sentence);
-      if (!advises) continue;
+      const advisesSwitch =
+        (/local_light|activeProfile|プロファイル/.test(sentence) &&
+          /切り替え|向けて|にする|にして/.test(sentence)) &&
+        !/前日|使わない|調整用/.test(sentence);
+      const advisesRestart = restartAdvice(sentence).length > 0;
       assert.ok(
-        /当日は使わない|当日は(絶対に)?[^。]{0,12}しない|前日までの調整/.test(sentence),
+        !advisesRestart && !advisesSwitch,
         '当日の再起動・プロファイル切り替えを誘っているコメントがあります: ' + sentence.trim()
       );
     }
   }
-  // 何も見ていないのに通る（＝空振り）テストにしない
-  assert.ok(checked >= 2, '再起動に触れた _comment が見つかりません（前提が変わっています）');
+  // 何も見ていないのに通る（＝空振り）テストにしない。
+  // ただし件数を固定しない（いまちょうど2行。言い換えで1行になると、
+  // 正当な改善でテストが落ち、次の人は数字を書き換えるだけで済んでしまう）。
+  assert.ok(checked >= 1, '再起動に触れた _comment が1つもありません（前提が変わっています）');
 });
 
 test('診断ログは USB に載らない', () => {

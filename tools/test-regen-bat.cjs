@@ -170,3 +170,50 @@ test('二度置いても内容が同じなら何もしない', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('再生成.bat は当日PCで実際に動く形になっている', () => {
+  // 🔴 このテストは「委譲しているか」「CRLF か」は見ていたのに、
+  //    **当日そのバッチが動くための条件を1つも見ていなかった**。
+  //    3巡目の再レビューで、次のどれを壊しても8件すべて緑だった:
+  //      ・"%NODEEXE%" を素の node にする（＝2026-09-09 に当日踏んだ 9009 そのもの）
+  //      ・ops\node\node.exe / ops\tools\retry-failed.cjs の探索先を壊す
+  //      ・KIDSPG_RESULTS_DIR の指し先を回フォルダにする
+  //      ・pause を全部消す（窓が一瞬で閉じ、スタッフは何も読めない）
+  const dir = makeResults();
+  try {
+    run(dir, ['--apply']);
+    const text = readBat(dir);
+
+    // 1) 当日PCの node は ops\node\node.exe だけで、PATH には入っていない
+    assert.match(
+      text,
+      /%REPO%\.\.\\ops\\node\\node\.exe/,
+      'ops\\node\\node.exe を探していません（当日PCでは 9009 で必ず失敗します）'
+    );
+    assert.match(
+      text,
+      /%REPO%\.\.\\ops\\tools\\retry-failed\.cjs/,
+      'ops\\tools\\retry-failed.cjs を探していません'
+    );
+
+    // 2) 見つけた node と道具を**実際に使う**こと（素の node に戻さない）
+    assert.match(
+      text,
+      /"%NODEEXE%"\s+"%TOOLDIR%\\retry-failed\.cjs"/,
+      '探し当てた node と道具を使っていません（素の node に戻っていませんか）'
+    );
+
+    // 3) results の指し先は回フォルダの**1つ上**（回フォルダを results と誤認しない）
+    assert.match(
+      text,
+      /set "KIDSPG_RESULTS_DIR=%~dp0\.\."/,
+      'results の指し先が回フォルダになっています'
+    );
+
+    // 4) 窓が一瞬で閉じるとスタッフは何も読めない。どの経路でも止まること
+    const pauses = (text.match(/^[ 	]*pause[ 	]*$/gm) || []).length;
+    assert.ok(pauses >= 3, 'pause が足りません（' + pauses + ' 個。失敗経路でも止まる必要があります）');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

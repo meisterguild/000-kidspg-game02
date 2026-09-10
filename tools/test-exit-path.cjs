@@ -97,4 +97,16 @@ test('終了が終わらないときの強制終了の保険が残っている',
     calls >= 2,
     'armForceExit が呼ばれていません（' + calls + ' か所。終了要求と window-all-closed の2経路が要ります）'
   );
+  // 🔴 呼ばれていても本体が空なら保険にならない（実測: 先頭に return; を
+  //    入れても4件すべて緑だった）。本体まで見る。
+  const defAt = main.indexOf('private armForceExit(');
+  assert.ok(defAt > 0, 'armForceExit の定義がありません');
+  const end = main.slice(defAt).search(/\r?\n {2}\}/);
+  assert.ok(end > 0, 'armForceExit の本体を切り出せません');
+  const body = main.slice(defAt, defAt + end);
+  assert.match(body, /setTimeout/, 'armForceExit が猶予を置いていません');
+  assert.match(body, /app\.exit\(0\)/, 'armForceExit が強制終了していません');
+  // 本体の**最初の文**が return; だと、呼ばれても何もしない（実測で素通りした）
+  const first = body.slice(body.indexOf('{') + 1).trim().split(/\r?\n/)[0].trim();
+  assert.ok(!/^return;?$/.test(first), 'armForceExit の本体が潰されています: ' + first);
 });

@@ -196,3 +196,40 @@ test('result.json が壊れていても写真は消せる（消すのが目的�
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('ComfyUI の input/output を守るガードが効いている（2026-09-09 の実害の再発防止）', () => {
+  // 🔴 このガードは、開発機の ComfyUI の input 43件・output 51件を実際に消した
+  //    事故を止めている唯一のコード。それを守るテストが1本も無く、ガードを
+  //    消しても10件すべて緑だった（3巡目の再レビューで実測）。
+  //    標準出力の文言で見れば、ガードが消えれば必ず落ちる。
+  const dir = makeResults([{ dt: '20260912_101112' }]);
+  try {
+    const out = run(dir, ['--apply']);
+    assert.match(
+      out,
+      /ComfyUI の input\/output は触りません/,
+      'KIDSPG_RESULTS_DIR のガードが消えています（npm test で開発機の写真が消えます）'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ドライランでは result.json の中身も書き換えない', () => {
+  // 🔴 「ドライランのつもりで消してしまう」が、このツールでいちばん怖い壊れ方。
+  //    ファイルの有無しか見ていなかったので、result.json の imagePath を
+  //    消すようにしても10件すべて緑だった（3巡目の再レビューで実測）。
+  const dt = '20260912_101112';
+  const dir = makeResults([{ dt }]);
+  try {
+    run(dir);
+    const r = JSON.parse(fs.readFileSync(path.join(dir, dt, 'result.json'), 'utf-8'));
+    assert.strictEqual(
+      r.imagePath,
+      `photo_${dt}.png`,
+      'ドライランなのに result.json の imagePath が書き換わりました'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

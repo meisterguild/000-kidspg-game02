@@ -87,7 +87,12 @@ test('preload が無いとき、保存フックは成功を返さない', () => 
 test('プレースホルダ版が無くてもAI完了から本カードを作る', () => {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.ts'), 'utf-8');
   const fn = src.slice(src.indexOf('private async handleComfyUICompletion'));
-  const body = fn.slice(0, fn.indexOf('\r\n  }'));
+  // 🔴 '\r\n  }' で切ると、LF でチェックアウトされた環境では indexOf が -1 を返し、
+  //    slice(0, -1) ＝ ファイルほぼ全体になって「本体の検査」が黙って
+  //    「ファイル全体検索」へ退化する。改行コードに依存しない形で切る。
+  const bodyEnd = fn.search(/\r?\n {2}\}/);
+  assert.ok(bodyEnd > 0, 'handleComfyUICompletion の本体を切り出せません');
+  const body = fn.slice(0, bodyEnd);
   // 🔴 'dummy_completed' 以外を全部保留にすると、ダミーが失敗した回は
   //    保留のまま誰も消化せず、カードが1枚も作られない
   assert.ok(
@@ -98,22 +103,25 @@ test('プレースホルダ版が無くてもAI完了から本カードを作る
   //    `currentState === undefined || currentState === 'dummy_inprogress'`
   //    と書いても成立してしまう（実測: 変異を入れても26件すべて緑だった）。
   //    保留の条件式そのものを取り出して、**それが合成中ちょうど1つ**であることを見る。
-  // 保留する枝は「pendingAICompletions.set を持つ if」で特定する
-  const setAt = body.indexOf('this.pendingAICompletions.set');
-  assert.ok(setAt > 0, '保留する枝（pendingAICompletions.set）が見つかりません');
-  const ifs = [...body.slice(0, setAt).matchAll(/if \(([^)]*)\)\s*\{/g)];
-  assert.ok(ifs.length > 0, '保留の分岐が見つかりません');
-  const cond = ifs[ifs.length - 1][1].trim();
-  assert.strictEqual(
-    cond,
-    "currentState === 'dummy_inprogress'",
-    '保留の条件が「合成中ちょうど1つ」ではありません: ' + cond
-  );
-  // undefined（プレースホルダ版すら作れなかった回）は**保留にせず進める**
-  assert.ok(
-    !/undefined/.test(cond) && !/!currentState/.test(cond),
-    'プレースホルダ版が無い回を保留にしています（誰も消化せずカードが1枚も作られません）'
-  );
+  // 🔴 保留する枝は**全部**見る。最初の1つだけを見ていたので、
+  //    同じバグを「あとの行」に足すと素通りしていた（実測で確認）。
+  const sets = [...body.matchAll(/this\.pendingAICompletions\.set/g)].map((m) => m.index);
+  assert.ok(sets.length > 0, '保留する枝（pendingAICompletions.set）が見つかりません');
+  for (const at of sets) {
+    const ifs = [...body.slice(0, at).matchAll(/if \((.*?)\)\s*\{/gs)];
+    assert.ok(ifs.length > 0, '保留の分岐が見つかりません');
+    const cond = ifs[ifs.length - 1][1].trim().replace(/["']/g, "'");
+    assert.strictEqual(
+      cond,
+      "currentState === 'dummy_inprogress'",
+      '保留の条件が「合成中ちょうど1つ」ではありません: ' + cond
+    );
+    // undefined（プレースホルダ版すら作れなかった回）は**保留にせず進める**
+    assert.ok(
+      !/undefined/.test(cond) && !/!currentState/.test(cond),
+      'プレースホルダ版が無い回を保留にしています（誰も消化せずカードが1枚も作られません）'
+    );
+  }
 });
 
 test('AI変換の投入は先渡しの失敗で止めない', () => {
@@ -194,11 +202,25 @@ test('ゲームが始まる前は Esc で戻れる（出口が1つも無くな�
   // 🔴 文字列が「どこかにある」だけでは、条件を反転しても・受けて何もしなくても通る
   //    （実測: どちらの変異でも26件すべて緑だった）。**語順ごと**縛る。
   //    ここは初期化に失敗した画面から抜ける唯一の出口なので、消えると詰む。
+  //    語順の決め打ちは、引数名を変えただけ・等価な書き方に直しただけで落ちる。
+  //    「keydown を受ける本体に handleEscapeKey が出る」＋「その中身が TOP へ戻す」を見る。
+  const listenAt = src.indexOf("window.addEventListener('keydown'");
+  assert.ok(listenAt > 0, '起動前の Esc を受けていません');
+  const handler = src.slice(Math.max(0, listenAt - 900), listenAt + 200);
+  assert.match(handler, /Escape/, 'Esc を見ていません');
+  assert.match(handler, /handleEscapeKey\(\)/, 'Esc を受けても戻る処理を呼んでいません');
+  // 🔴 呼んでいても中身が空なら出口は消える（実測: 中身を潰しても通っていた）。
+  const hkAt = src.indexOf('const handleEscapeKey');
+  assert.ok(hkAt > 0, 'handleEscapeKey の定義がありません');
+  const hkBody = src.slice(hkAt, src.indexOf('}, [', hkAt));
+  // 🔴 文としてそのまま呼んでいることまで見る。`false && setCurrentScreen('TOP')`
+  //    のように潰しても、文字列があるだけの検査では通っていた（実測）。
   assert.match(
-    src,
-    /if \(event\.key !== 'Escape'\) return;[\s\S]{0,200}handleEscapeKey\(\)/,
-    'Esc を受けても実際に戻る処理を呼んでいません'
+    hkBody,
+    /(^|[\r\n;{]\s*)setCurrentScreen\('TOP'\);/,
+    'Esc で TOP へ戻していません（条件で潰されていませんか）'
   );
+  assert.ok(!/if \(false/.test(hkBody), 'handleEscapeKey の本体が無効化されています');
 });
 
 test('config が読めないときは「読み込み中」で止めずに理由を出す', () => {
@@ -255,7 +277,9 @@ test('稼働中の ComfyUI 障害はスタッフ向けの帯へ流す', () => {
   //    `if (false && ...)` で潰しても通る（実測で確認）。本体を切り出して見る。
   const nsAt = src.indexOf('private notifyStaff(');
   assert.ok(nsAt > 0, 'notifyStaff の定義が見つかりません');
-  const nsBody = src.slice(nsAt, src.indexOf('\r\n  }', nsAt));
+  const nsEnd = src.slice(nsAt).search(/\r?\n {2}\}/);
+  assert.ok(nsEnd > 0, 'notifyStaff の本体を切り出せません');
+  const nsBody = src.slice(nsAt, nsAt + nsEnd);
   assert.match(
     nsBody,
     /webContents\.send\(\s*'startup-warning'/,
@@ -369,7 +393,12 @@ test('PATH 任せのときは環境変数を触らない（開発機の設定を
 test('起動時の点検は実際に PNG を書かせる', () => {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.ts'), 'utf-8');
   const fn = src.slice(src.indexOf('private async checkImageMagick'));
-  const body = fn.slice(0, fn.indexOf('\r\n  }'));
+  // 🔴 '\r\n  }' で切ると、LF でチェックアウトされた環境では indexOf が -1 を返し、
+  //    slice(0, -1) ＝ ファイルほぼ全体になって「本体の検査」が黙って
+  //    「ファイル全体検索」へ退化する。改行コードに依存しない形で切る。
+  const bodyEnd = fn.search(/\r?\n {2}\}/);
+  assert.ok(bodyEnd > 0, 'handleComfyUICompletion の本体を切り出せません');
+  const body = fn.slice(0, bodyEnd);
   assert.match(body, /MAGICK_PROBE_ARGS/, '点検が PNG を書かせていません');
   assert.ok(!/\['-version'\]/.test(body), '-version で確かめています');
   // 点検の前に環境を整えること（順番が逆だと最初の1回が落ちる）
@@ -450,10 +479,13 @@ test('ランキングの自動送りは、運営が押した1回目を握り潰�
   );
   assert.match(eff, /clearInterval\(interval\)/, 'interval を止めていません');
 
-  // 片付け自体は残っていること（終日運転で待機中のタイマーを残さない）
-  assert.match(
-    src,
-    /useEffect\(\(\) => \(\) => \{\s*for \(const t of timersRef\.current\) clearTimeout\(t\);/,
-    '画面を閉じるときの片付けがありません'
-  );
+  // 片付け自体は残っていること（終日運転で待機中のタイマーを残さない）。
+  // 🔴 整形（prettier）で改行位置が変わっただけで落ちないようにする。
+  //    「依存配列が空の useEffect が返す関数の中で timersRef を片付ける」ことだけを見る。
+  const unmountAt = src.search(/useEffect\(\s*\(\)\s*=>\s*\(\)\s*=>/);
+  assert.ok(unmountAt > 0, '画面を閉じるときの片付け（アンマウント専用 effect）がありません');
+  const unmount = src.slice(unmountAt, unmountAt + 400);
+  assert.match(unmount, /timersRef\.current/, '片付けが timersRef を見ていません');
+  assert.match(unmount, /clearTimeout/, '片付けがタイマーを止めていません');
+  assert.match(unmount, /\},\s*\[\]\s*,?\s*\)/, 'アンマウント時だけの片付けになっていません');
 });
