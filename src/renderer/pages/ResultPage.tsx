@@ -106,6 +106,7 @@ const ResultPage: React.FC = () => {
           score: gameScore,
           timestampJST: timestamp,
           imagePath: photoFileName,
+          boardMode,
         };
 
         const resultSave = await saveGameResult(resultDir, gameResult);

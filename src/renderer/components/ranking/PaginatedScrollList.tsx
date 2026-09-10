@@ -186,35 +186,53 @@ const PaginatedScrollList: React.FC<PaginatedScrollListProps> = ({
    * ページを送る。自動送りと運営のキー操作で同じ経路を通す
    * （動きが2通りに分かれると、手で送ったときだけ挙動が違うことになる）。
    */
+  /** 発火し終えたタイマーを控えから外す（終日運転で配列が伸び続けないように） */
+  const drop = useCallback((id: ReturnType<typeof setTimeout>) => {
+    timersRef.current = timersRef.current.filter((t) => t !== id);
+  }, []);
+
   const step = useCallback((delta: number) => {
     const count = pagesLenRef.current;
     if (count <= 1) return;
     // 1) 今のページを左へ送り出す
     setSlide('out');
     const t1 = setTimeout(() => {
+      drop(t1);
       // 2) 次のページに差し替え、アニメーション無しで右端へ置く
       setCurrentPage(prev => (prev + delta + count) % count);
       setSlide('in');
       // 3) 1フレーム置いてから定位置へ滑り込ませる
       //    （同じフレームで戻すとブラウザが「移動」と見なさず、瞬間移動になる）
-      const t2 = setTimeout(() => setSlide('center'), 30);
+      const t2 = setTimeout(() => {
+        drop(t2);
+        setSlide('center');
+      }, 30);
       timersRef.current.push(t2);
     }, half);
     timersRef.current.push(t1);
-  }, [half]);
+  }, [half, drop]);
 
   useEffect(() => {
     if (pages.length <= 1 || paused) return;
 
     const interval = setInterval(() => step(1), intervalSeconds * 1000);
 
+    // 🔴 **ここで送り中のタイマーまで片付けてはいけない。**
+    //    運営が F8 を押すと onSlideshowCommand が setPaused(true) と step() を
+    //    続けて呼ぶ。paused が変わるとこの effect が張り直され、cleanup が
+    //    step() の**今しかけた**タイマー（ページを進める唯一の場所）を消すため、
+    //    自動送り中の最初の 1 回は必ず空振りしていた（2巡目レビューの指摘）。
+    //    片付けは下の「画面を閉じるとき」だけでよい。
     return () => {
       clearInterval(interval);
-      for (const t of timersRef.current) clearTimeout(t);
-      timersRef.current = [];
-      setSlide('center');
     };
   }, [pages.length, intervalSeconds, paused, step]);
+
+  // 終日つけっぱなしの画面なので、閉じるときは待機中のタイマーを必ず片付ける
+  useEffect(() => () => {
+    for (const t of timersRef.current) clearTimeout(t);
+    timersRef.current = [];
+  }, []);
 
   /**
    * 運営の操作を受ける（main 側の globalShortcut から届く）。

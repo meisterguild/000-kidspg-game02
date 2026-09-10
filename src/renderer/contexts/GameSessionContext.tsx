@@ -1,8 +1,9 @@
 import React, { createContext, useState, useContext, useCallback, useMemo } from 'react';
 import { useScreen } from './ScreenContext'; // ScreenContextからフックをインポート
+import type { BoardMode } from '@shared/types';
 
-/** 盤面の作り。cube = 立方体3面（既定）／plane = 正面1面だけ */
-export type BoardMode = 'cube' | 'plane';
+// 定義は shared/types（記録にも入るため）。既存の import 元を変えずに済むよう再輸出する
+export type { BoardMode };
 
 interface GameSessionContextType {
   capturedImage: string;

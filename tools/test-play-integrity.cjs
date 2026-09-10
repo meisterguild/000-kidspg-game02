@@ -341,3 +341,49 @@ test('生成にかかった秒数をログに残す（当日の人数計算に�
   );
   assert.match(src, /生成完了 \$\{datetime\}: \$\{elapsedSec\} 秒/, '秒数を出していません');
 });
+
+test('記録に盤の種類（cube / plane）を残す', () => {
+  // 🔴 後から復元できない。平面はランクの閾値が別（48/112/216/320/424）なので、
+  //    記録に無いと「どちらの物差しのランクか」が永久に分からなくなる。
+  const types = fs.readFileSync(path.join(ROOT, 'src', 'shared', 'types', 'index.ts'), 'utf-8');
+  const gr = types.slice(types.indexOf('export interface GameResult'));
+  const body = gr.slice(0, gr.indexOf('\n}'));
+  assert.match(body, /boardMode\?: BoardMode;/, 'GameResult に boardMode がありません');
+
+  const page = fs.readFileSync(
+    path.join(ROOT, 'src', 'renderer', 'pages', 'ResultPage.tsx'),
+    'utf-8'
+  );
+  const lit = page.slice(page.indexOf('const gameResult: GameResult = {'));
+  assert.match(
+    lit.slice(0, lit.indexOf('};')),
+    /^\s*boardMode,\s*$/m,
+    'ResultPage が boardMode を書き込んでいません'
+  );
+});
+
+test('ランキングの自動送りは、運営が押した1回目を握り潰さない', () => {
+  // 🔴 F8 は setPaused(true) と step() を続けて呼ぶ。paused が変わると
+  //    自動送り effect が張り直されるので、その cleanup で待機中のタイマーを
+  //    消すと、step() が今しかけたページ送り（唯一の setCurrentPage）が死ぬ。
+  //    自動送り中の最初の1回が必ず空振りしていた。
+  const src = fs.readFileSync(
+    path.join(ROOT, 'src', 'renderer', 'components', 'ranking', 'PaginatedScrollList.tsx'),
+    'utf-8'
+  );
+  const at = src.indexOf('const interval = setInterval(() => step(1)');
+  assert.ok(at > 0, '自動送りの setInterval が見つかりません');
+  const eff = src.slice(at, src.indexOf('}, [pages.length, intervalSeconds, paused, step]);', at));
+  assert.ok(
+    !/clearTimeout/.test(eff),
+    '自動送り effect の cleanup がまだタイマーを消しています'
+  );
+  assert.match(eff, /clearInterval\(interval\)/, 'interval を止めていません');
+
+  // 片付け自体は残っていること（終日運転で待機中のタイマーを残さない）
+  assert.match(
+    src,
+    /useEffect\(\(\) => \(\) => \{\s*for \(const t of timersRef\.current\) clearTimeout\(t\);/,
+    '画面を閉じるときの片付けがありません'
+  );
+});

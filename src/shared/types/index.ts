@@ -8,6 +8,12 @@ export type GameScreen = 'TOP' | 'CAMERA' | 'COUNTDOWN' | 'GAME' | 'RESULT' | 'T
 export type GameRank = string;
 export type GameLevel = string;
 
+/**
+ * 盤面の作り。cube = 立方体3面（既定）／plane = 正面1面だけ。
+ * 記録（GameResult）にも入るので、レンダラではなくここに置く。
+ */
+export type BoardMode = 'cube' | 'plane';
+
 // プレイ結果データの型定義
 export interface GameResult {
   nickname: string;
@@ -24,6 +30,15 @@ export interface GameResult {
    * 3000人規模ではここが**記録の正本**になる。後日のカード公開はこれを集めて作る。
    */
   memorialCardPath?: string;
+  /**
+   * この回を遊んだ盤の種類。無い記録は立方体（この項目を足す前のもの）。
+   *
+   * 🔴 **後から復元できないので必ず残す。** 平面はランクの閾値が別で
+   * （48/112/216/320/424 対 立方体の 88/200/392/…）、同じ「たつじん」でも
+   * 中身が違う。記録側にこれが無いと、後日カードを並べたときに
+   * どちらの物差しで付いたランクなのか永久に分からない。
+   */
+  boardMode?: BoardMode;
 }
 
 /** ステージ1面ぶんの出題設定 */
