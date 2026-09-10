@@ -140,7 +140,24 @@ rem ------------------------------------------------------------
 echo [4/5] ImageMagick を実際に動かす
 rem 🔴 **"-version" で確かめてはいけない。** コーダーを読み込まないので、
 rem    PNG を1枚も扱えない状態でも成功する（実測）。
-rem    ここでは 4x4 の PNG を書き、さらに**本物のカード土台**を読む。
+rem
+rem 🔴 **失敗したときは「なぜ」まで出す。** 当日PCで
+rem    「unable to load module ... 指定されたモジュールが見つかりません」
+rem    が出たとき、原因（依存の不在／探索の届かなさ／セキュリティのブロック）を
+rem    切り分けられず、実機を何度も往復させてしまった。
+rem    check-imagemagick.ps1 が LoadLibrary を直に呼んで Win32 の番号で判定し、
+rem    直せるもの（探索の届かなさ）はその場で直す。
+set "IMCHECK=%~dp0check-imagemagick.ps1"
+if not exist "!IMCHECK!" set "IMCHECK=%TARGET%\ops\tools\onsite\check-imagemagick.ps1"
+set "IMRESULT="
+if exist "!IMCHECK!" (
+  for /f "usebackq tokens=*" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "!IMCHECK!" -Dir "!IMDIR!" -Fix`) do call :im_line "%%L"
+) else (
+  echo        ＊ 詳しい点検スクリプトがありません : !IMCHECK!
+)
+if defined IMRESULT echo        判定 : !IMRESULT!
+echo.
+
 set "ERRFILE=%TEMP%\kidspg-magick-err.txt"
 set "PROBEPNG=%TEMP%\kidspg-probe.png"
 set "TRY=0"
@@ -286,6 +303,17 @@ if "!SACC!"=="-1" (
 )
 echo        自分たちのファイルのブロック : !SACC! 件（無関係 !SACO! 件／不明 !SACU! 件）
 exit /b 0
+
+rem ------------------------------------------------------------
+rem  check-imagemagick.ps1 の出力をそのまま見せつつ、
+rem  末尾の RESULT= の行だけ覚えておく。
+rem ------------------------------------------------------------
+:im_line
+set "L=%~1"
+echo        !L!
+echo !L! | findstr /b /c:"RESULT=" > nul 2>&1
+if not errorlevel 1 set "IMRESULT=!L!"
+goto :eof
 
 rem ------------------------------------------------------------
 rem  点検スクリプトの出力を1行ずつ振り分ける。

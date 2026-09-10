@@ -540,6 +540,15 @@ copyFile(path.join(__dirname, 'onsite', 'verify-copy.ps1'), path.join(outDir, 'v
 // 両方に置く。ログはバッチと同じ場所に残る。
 copyFile(path.join(__dirname, 'onsite', 'diagnose.bat'), path.join(outDir, '4_診断と修復.bat'));
 copyFile(path.join(__dirname, 'onsite', 'diagnose.bat'), path.join(payload, '診断と修復.bat'));
+// 原因を名指しする点検は**バッチの隣**に置く（USB から実行しても使えるように）
+copyFile(
+  path.join(__dirname, 'onsite', 'check-imagemagick.ps1'),
+  path.join(outDir, 'check-imagemagick.ps1')
+);
+copyFile(
+  path.join(__dirname, 'onsite', 'check-imagemagick.ps1'),
+  path.join(payload, 'check-imagemagick.ps1')
+);
 copyFile(path.join(ROOT, 'docs', 'setup-onsite.md'), path.join(outDir, '1_当日手順書.md'));
 // ComfyUI の構築手順も入れる。当日PCでは作り直せない（オフラインで pip も使えない）が、
 // 「どう組んだものが入っているのか」が分からないと、壊れたときに何も判断できない。

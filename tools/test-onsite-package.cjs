@@ -653,6 +653,29 @@ test('診断と修復.bat は cmd の決めごとを守っている', () => {
   assert.strictEqual((bat.match(/^pause$/gm) || []).length, 1, 'pause は外側の1回だけにしてください');
 });
 
+test('原因を名指しする点検がバッチの隣に載る', () => {
+  // 🔴 「PNG を扱えません」だけでは実機を何度も往復させることになる。
+  //    LoadLibrary の Win32 番号で、依存の不在／探索の届かなさ／
+  //    セキュリティのブロックを切り分けられるようにした。
+  const src = fs.readFileSync(path.join(ROOT, 'tools', 'make-onsite-package.cjs'), 'utf-8');
+  assert.match(src, /outDir, 'check-imagemagick.ps1'/, 'USB のルートに置いていません');
+  assert.match(src, /payload, 'check-imagemagick.ps1'/, 'C:\kidspg 直下に置いていません');
+
+  const ps1 = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'check-imagemagick.ps1'), 'utf-8');
+  assert.ok(ps1.charCodeAt(0) === 0xfeff, 'BOM がありません（PowerShell 5.1 が CP932 と誤読します）');
+  assert.match(ps1, /LoadLibraryExW/, 'LoadLibrary を直に呼んでいません');
+  // 原因の別を機械が読める形で返すこと
+  for (const c of ['blocked', 'missing-dep', 'search-path', 'no-file']) {
+    assert.ok(ps1.includes(c), '原因の種別 ' + c + ' がありません');
+  }
+  // エラー本文は magick が ANSI(CP932) で書くので、既定で読むと化ける
+  assert.match(ps1, /-Encoding Default/, 'エラー本文の文字コードを合わせていません');
+
+  const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'diagnose.bat'), 'utf-8');
+  assert.match(bat, /check-imagemagick.ps1/, '診断と修復.bat が呼んでいません');
+  assert.match(bat, /-Fix/, '直せるものを直させていません');
+});
+
 test('診断と修復.bat はログを自分と同じ場所へ残す', () => {
   const bat = fs.readFileSync(path.join(ROOT, 'tools', 'onsite', 'diagnose.bat'), 'utf-8');
   // USB から実行したら USB に残る（そのまま送れるように）
