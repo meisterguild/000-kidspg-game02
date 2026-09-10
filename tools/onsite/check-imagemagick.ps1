@@ -209,7 +209,12 @@ if ($Fix -and $cause -eq 'search-path') {
     Say "  $copied 個を複製しました"
     $plain2 = TryLoad $coderPng 0
     Say ('  もう一度読む -> ' + (Describe $plain2))
-    if ($plain2 -eq 0) { $cause = '' }
+    # 🔴 **PowerShell からの読み込みを最終判定にしない。** ここは
+    # PowerShell が呼び出し元なので「アプリのフォルダ」が PowerShell のもの
+    # になり、magick.exe から呼ぶ場合と条件が違う。判定は下の 6.
+    # （magick で実際に PNG を書く）に委ねる。実機で、複製で直ったのに
+    # ここが 126 のままで RESULT=NG と出た（2026-09-10）。
+    if ($plain2 -eq 0) { $cause = '' } else { $cause = 'verify-with-magick' }
 }
 
 # ------------------------------------------------------------ 6. 実際に PNG を書く
@@ -231,6 +236,8 @@ $proc = Start-Process -FilePath (Join-Path $Dir 'magick.exe') `
 $env:PATH = $savedPath
 if ($proc.ExitCode -eq 0 -and (Test-Path -LiteralPath $out)) {
     Say '  OK : PNG を書けました'
+    # magick が実際に書けたなら、それが答え（上の PowerShell 越しの結果より優先）
+    if ($cause -eq 'verify-with-magick' -or $cause -eq 'search-path') { $cause = '' }
     Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
 } else {
     Say "  NG : 書けませんでした（終了コード $($proc.ExitCode)）"
